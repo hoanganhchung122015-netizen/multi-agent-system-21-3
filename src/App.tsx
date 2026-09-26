@@ -156,7 +156,7 @@ export default function App() {
           {/* Header Tiêu đề Ngày hội CĐS */}
           <div className="text-center mb-6">
             <p className="text-xs font-bold tracking-widest text-slate-800 uppercase">
-              NGÀY HỘI ĐỔI MỚI SÁNG TẠO V CHUYỂN ĐỔI SỐ NĂM 2026
+              NGÀY HỘI ĐỔI MỚI SÁNG TẠO VÀ CHUYỂN ĐỔI SỐ NĂM 2026
             </p>
             <h1 className="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight mt-1">
               SYMBIOTIC AI
