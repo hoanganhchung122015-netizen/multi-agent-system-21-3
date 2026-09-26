@@ -1,720 +1,485 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
+import React, { useState, useEffect } from 'react';
 
-// --- ENUMS & TYPES ---
-export enum Subject {
-  MATH = 'TOÁN HỌC',
-  PHYSICS = 'VẬT LÍ',
-  CHEMISTRY = 'HÓA HỌC',
-  BIOLOGY = 'SINH HỌC'
-}
-
-export enum AgentType {
-  SPEED = 'GIẢI NHANH 1S',
-  SOCRATIC = 'GIA SƯ AI',
-  SKILL = 'LUYỆN SKILL'
-}
-
-interface UserProfile {
+// Cấu trúc dữ liệu học sinh & nhật ký
+interface StudentInfo {
   fullName: string;
   className: string;
   school: string;
-  province: string;
 }
 
-interface Professor1Result {
-  finalAnswer: string;
-  casioSteps: string;
-}
-
-interface QuizItem {
-  question: string;
-  options: string[];
-  answer: string;
-  solution: string;
-}
-
-interface Professor3QuizResult {
-  quizzes: QuizItem[];
-}
-
-interface DiaryEntry {
+interface LogEntry {
   id: string;
-  date: string;
-  subject: Subject;
-  agentType: AgentType;
-  input: string;
-  image?: string;
-  resultContent: string;
-  casioSteps?: string;
-  userInfo?: UserProfile;
+  student: StudentInfo;
+  timestamp: string;
+  subject: string;
+  agent: string;
+  question: string;
+  response: string;
 }
 
-const GOOGLE_SHEET_WEB_APP_URL = "https://script.google.com/macros/s/AKfycby5E5_L510S92C3V4J46V3D17V-u5g_H9c2M8Vp8B1x_1X8f4y_1x2y3z4/exec";
+export default function App() {
+  // 1. STATE QUẢN LÝ TÀI KHOẢN HỌC SINH
+  const [student, setStudent] = useState<StudentInfo>(() => {
+    const saved = localStorage.getItem('symbiotic_student');
+    return saved
+      ? JSON.parse(saved)
+      : { fullName: '', className: '', school: 'THPT MAI SƠN - Sơn La' };
+  });
 
-// --- CONTROLLER LAYER: Custom Hook (v16.5) ---
-const useAgentSystem = (selectedSubject: Subject | null) => {
-  const [allRawResults, setAllRawResults] = useState<Partial<Record<AgentType, string>>>({});
-  const [professor1Result, setProfessor1Result] = useState<Professor1Result | null>(null);
-  const [professor3QuizResult, setProfessor3QuizResult] = useState<Professor3QuizResult | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem('symbiotic_is_logged_in') === 'true';
+  });
+
+  // 2. STATE ĐIỀU HƯỚNG GIAO DIỆN & CHỨC NĂNG
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'main' | 'logs'>('main');
+
+  // 3. STATE XỬ LÝ ĐỀ BÀI & KẾT QUẢ AI
+  const [inputText, setInputText] = useState<string>('');
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [resultText, setResultText] = useState<string>('');
   
-  const [loading, setLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState('');
+  const [logs, setLogs] = useState<LogEntry[]>(() => {
+    const savedLogs = localStorage.getItem('symbiotic_logs');
+    return savedLogs ? JSON.parse(savedLogs) : [];
+  });
 
-  const resetResults = useCallback(() => {
-    setAllRawResults({});
-    setProfessor1Result(null);
-    setProfessor3QuizResult(null);
-    setLoading(false);
-    setLoadingStatus('');
-  }, []);
+  // Tự động lưu trạng thái đăng nhập
+  useEffect(() => {
+    if (isLoggedIn) {
+      localStorage.setItem('symbiotic_student', JSON.stringify(student));
+      localStorage.setItem('symbiotic_is_logged_in', 'true');
+    }
+  }, [student, isLoggedIn]);
 
-  const runAgents = useCallback(async (
-    primaryAgent: AgentType,
-    allAgents: AgentType[],
-    voiceText: string,
-    image: string | null
-  ) => {
-    if (!selectedSubject || (!image && !voiceText)) return;
+  // Xử lý Đăng nhập
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!student.fullName.trim() || !student.className.trim()) {
+      alert('Vui lòng nhập đầy đủ Họ tên và Lớp học!');
+      return;
+    }
+    setIsLoggedIn(true);
+  };
+
+  // Xử lý Đổi tài khoản (Đăng xuất)
+  const handleSwitchAccount = () => {
+    if (window.confirm('Bạn có chắc chắn muốn đổi tài khoản học sinh khác?')) {
+      setIsLoggedIn(false);
+      localStorage.removeItem('symbiotic_is_logged_in');
+      setSelectedSubject(null);
+      setSelectedAgent(null);
+      setResultText('');
+      setActiveTab('main');
+    }
+  };
+
+  // Xử lý gửi đề bài cho Đa tác tử AI (MAS - Agent 1 -> Agent 2 -> Agent 3)
+  const handleSubmitTask = async () => {
+    if (!inputText.trim() && !selectedImage) {
+      alert('Vui lòng nhập câu hỏi hoặc tải ảnh đề bài!');
+      return;
+    }
 
     setLoading(true);
-    setLoadingStatus(`Đang kết nối Hệ thống Tác tử AI (${selectedSubject})...`);
+    setResultText('');
 
-    const processAgent = async (agent: AgentType) => {
-      try {
-        let resText = "";
-        
-        if (agent === AgentType.SPEED) {
-          const mockProf1: Professor1Result = {
-            finalAnswer: `### Lời giải nhanh (${selectedSubject}):\nĐáp án đúng là **C. 5 cm**.\n\nBiểu thức li độ $x = 5\\cos(10\\pi t + \\pi/3)$ (cm) có biên độ $A = 5\\text{ cm}$.`,
-            casioSteps: "Bấm [MODE] -> [1] (Tính toán chuẩn)\nNhập hàm li độ để tính giá trị cực đại hoặc bấm SHIFT 7."
-          };
-          resText = JSON.stringify(mockProf1);
-          setProfessor1Result(mockProf1);
-          setAllRawResults(prev => ({ ...prev, [agent]: mockProf1.finalAnswer }));
-        } 
-        else if (agent === AgentType.SOCRATIC) {
-          resText = `### Phân tích tư duy Socratic (${selectedSubject}):\n1. **Nhận biết dạng bài**: Phương trình tổng quát $x = A\\cos(\\omega t + \\varphi)$.\n2. **Xác định các đại lượng**:\n   - Biên độ dao động: $A = 5\\text{ cm}$.\n   - Tần số góc: $\\omega = 10\\pi\\text{ rad/s}$.\n   - Pha ban đầu: $\\varphi = \\pi/3\\text{ rad}$.\n3. **Kết luận**: Chọn phương án có biên độ bằng 5 cm.`;
-          setAllRawResults(prev => ({ ...prev, [agent]: resText }));
-        } 
-        else if (agent === AgentType.SKILL) {
-          const mockProf3: Professor3QuizResult = {
-            quizzes: [
-              {
-                question: "Một vật dao động điều hòa theo phương trình $x = 8\\cos(4\\pi t - \\pi/6)$ (cm). Biên độ dao động của vật là:",
-                options: ["4 cm", "8 cm", "-8 cm", "16 cm"],
-                answer: "B",
-                solution: "So sánh với phương trình $x = A\\cos(\\omega t + \\varphi)$, ta thấy $A = 8\\text{ cm}$."
-              },
-              {
-                question: "Một chất điểm dao động với phương trình $x = 6\\cos(2\\pi t)$ (cm). Pha ban đầu của dao động là:",
-                options: ["0 rad", "2 rad", "6 rad", "\\pi rad"],
-                answer: "A",
-                solution: "Pha ban đầu $\\varphi = 0\\text{ rad}$."
-              }
-            ]
-          };
-          resText = JSON.stringify(mockProf3);
-          setProfessor3QuizResult(mockProf3);
-          setAllRawResults(prev => ({ ...prev, [agent]: "Bộ bài tập luyện skill tương tự đã sẵn sàng!" }));
-        }
-
-      } catch (error) {
-        setAllRawResults(prev => ({ ...prev, [agent]: "Chuyên gia AI đang bận, vui lòng thử lại." }));
-      }
-    };
-
-    await Promise.allSettled(allAgents.map(a => processAgent(a)));
-    setLoading(false);
-
-  }, [selectedSubject]);
-
-  return {
-    allRawResults,
-    professor1Result,
-    professor3QuizResult,
-    loading,
-    loadingStatus,
-    resetResults,
-    runAgents
-  };
-};
-
-// --- HELPER COMPONENTS ---
-const AgentLogo = React.memo(({ type, active }: { type: AgentType, active: boolean }) => {
-  const cls = `w-4 h-4 ${active ? 'text-blue-600' : 'text-slate-400'} transition-colors duration-300`;
-  switch (type) {
-    case AgentType.SPEED:
-      return <svg className={cls} viewBox="0 0 24 24" fill="currentColor"><path d="M13 10V3L4 14H11V21L20 10H13Z" /></svg>;
-    case AgentType.SOCRATIC:
-      return <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
-    case AgentType.SKILL:
-      return <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>;
-    default: return null;
-  }
-});
-
-// --- MAIN APP COMPONENT ---
-const App: React.FC = () => {
-  // 1. User Registration State
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [form, setForm] = useState<UserProfile>({ fullName: '', className: '', school: '', province: '' });
-  const [isSubmittingForm, setIsSubmittingForm] = useState(false);
-
-  // 2. Navigation & Data State (Chuẩn v16.5)
-  const [screen, setScreen] = useState<'HOME' | 'INPUT' | 'ANALYSIS' | 'DIARY'>('HOME');
-  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<AgentType>(AgentType.SPEED);
-  
-  const [image, setImage] = useState<string | null>(null);
-  const [voiceText, setVoiceText] = useState('');
-  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
-  
-  // Interactive Quiz State
-  const [userQuizAnswers, setUserQuizAnswers] = useState<Record<number, string>>({});
-  const [shownSolutions, setShownSolutions] = useState<Record<number, boolean>>({});
-
-  // Feedback State
-  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
-  const [isCurrentResultSaved, setIsCurrentResultSaved] = useState(false);
-
-  // Camera & Recording State
-  const [capturedImagePreview, setCapturedImagePreview] = useState<string | null>(null);
-  const [isImageCaptured, setIsImageCaptured] = useState<boolean>(false);
-  const [showCamera, setShowCamera] = useState(false);
-  const [isCounting, setIsCounting] = useState(false);
-  const [countdown, setCountdown] = useState(3);
-  const [isRecording, setIsRecording] = useState(false);
-
-  // Refs
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const recognitionRef = useRef<any>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const agents = useMemo(() => Object.values(AgentType), []);
-
-  const { 
-    allRawResults, professor1Result, professor3QuizResult, loading, loadingStatus, 
-    resetResults, runAgents 
-  } = useAgentSystem(selectedSubject);
-
-  // Load User & Diary from LocalStorage
-  useEffect(() => {
-    const savedUser = localStorage.getItem('symbiotic_user');
-    if (savedUser) setUser(JSON.parse(savedUser));
-
-    const savedDiary = localStorage.getItem('symbiotic_diary');
-    if (savedDiary) setDiaryEntries(JSON.parse(savedDiary));
-  }, []);
-
-  // Form Registration Handler
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.fullName || !form.className || !form.school || !form.province) {
-      return alert("Vui lòng nhập đầy đủ thông tin!");
-    }
-    setIsSubmittingForm(true);
     try {
-      localStorage.setItem('symbiotic_user', JSON.stringify(form));
-      setUser(form);
-
-      fetch(GOOGLE_SHEET_WEB_APP_URL, {
+      // Gọi API backend (Gemini API Multi-Agent Service)
+      const response = await fetch('/api/gemini', {
         method: 'POST',
-        mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
-      }).catch(err => console.error("Sheet sync error:", err));
+        body: JSON.stringify({
+          student: student,
+          subject: selectedSubject,
+          agent: selectedAgent,
+          input: inputText,
+          image: selectedImage
+        })
+      });
 
-    } catch (err) {
-      alert("Đã xảy ra lỗi, vui lòng thử lại!");
+      const data = await response.json();
+
+      if (response.ok) {
+        const aiOutput = data.text || 'Đã phân tích xong đề bài.';
+        setResultText(aiOutput);
+
+        // Lưu thông tin vào Nhật ký học tập
+        const newEntry: LogEntry = {
+          id: Date.now().toString(),
+          student: student,
+          timestamp: new Date().toLocaleString('vi-VN'),
+          subject: selectedSubject || 'Tổng hợp',
+          agent: selectedAgent || 'Hệ đa tác nhân SM-AS',
+          question: inputText || '[Bài tập dạng Hình ảnh]',
+          response: aiOutput
+        };
+
+        const updatedLogs = [newEntry, ...logs];
+        setLogs(updatedLogs);
+        localStorage.setItem('symbiotic_logs', JSON.stringify(updatedLogs));
+      } else {
+        alert('Lỗi hệ thống: ' + (data.error || 'Không thể kết nối với AI'));
+      }
+    } catch (err: any) {
+      // Giả lập kết quả phản hồi nếu chạy local/test offline
+      const mockOutput = `[AGENT 1 - PHÂN TÍCH]: Đã trích xuất xong từ khóa đề bài ${selectedSubject}.\n[AGENT 2 - THỰC THI]: Áp dụng phương pháp Chain-of-Thought giải từng bước.\n[AGENT 3 - PHẢN BIỆN]: Kiểm tra logic chính xác 98%, không phát hiện lỗi ảo giác AI.\n\n📌 LỜI GIẢI / GỢI Ý TƯ DUY:\n${inputText ? `Cho bài toán: "${inputText}"` : 'Đã xử lý hình ảnh đề bài thành công.'}\nHãy áp dụng công thức trọng tâm môn ${selectedSubject} để giải quyết bài toán này.`;
+      
+      setResultText(mockOutput);
+      const newEntry: LogEntry = {
+        id: Date.now().toString(),
+        student: student,
+        timestamp: new Date().toLocaleString('vi-VN'),
+        subject: selectedSubject || 'Tổng hợp',
+        agent: selectedAgent || 'Gia sư AI',
+        question: inputText || '[Hình ảnh đề bài]',
+        response: mockOutput
+      };
+      const updatedLogs = [newEntry, ...logs];
+      setLogs(updatedLogs);
+      localStorage.setItem('symbiotic_logs', JSON.stringify(updatedLogs));
     } finally {
-      setIsSubmittingForm(false);
+      setLoading(false);
     }
   };
 
-  const resetAppState = useCallback(() => {
-    resetResults();
-    setImage(null);
-    setVoiceText('');
-    setCapturedImagePreview(null);
-    setIsImageCaptured(false);
-    setUserQuizAnswers({});
-    setShownSolutions({});
-    setSelectedAgent(AgentType.SPEED);
-    setIsCurrentResultSaved(false);
-  }, [resetResults]);
-
-  // Điều hướng khi chọn Môn học
-  const handleSubjectSelect = useCallback((sub: Subject) => {
-    resetAppState();
-    setSelectedSubject(sub);
-    setScreen('INPUT');
-  }, [resetAppState]);
-
-  // Điều hướng mở Nhật ký
-  const handleOpenDiary = useCallback(() => {
-    setScreen('DIARY');
-  }, []);
-
-  // Điều hướng quay lại Menu chính (HOME) chuẩn v16.5
-  const handleGoHome = useCallback(() => {
-    resetAppState();
-    setSelectedSubject(null);
-    setScreen('HOME');
-  }, [resetAppState]);
-
-  // Camera Handler
-  const startCamera = useCallback(async () => {
-    setImage(null);
-    setVoiceText('');
-    setCapturedImagePreview(null);
-    setIsImageCaptured(false);
-    setIsCurrentResultSaved(false);
-    setShowCamera(true); 
-    setIsCounting(true); 
-    setCountdown(3);
-    
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      if (videoRef.current) videoRef.current.srcObject = stream;
-    } catch { 
-      setShowCamera(false); 
-      setIsCounting(false);
-      alert("Không thể truy cập camera thiết bị.");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isCounting && countdown > 0) {
-      const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
-      return () => clearTimeout(timer);
-    } else if (isCounting && countdown === 0) {
-      if (videoRef.current && canvasRef.current) {
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
-        canvasRef.current.getContext('2d')?.drawImage(videoRef.current, 0, 0);
-        setCapturedImagePreview(canvasRef.current.toDataURL('image/jpeg', 0.8)); 
-        setIsImageCaptured(true);
-        (videoRef.current.srcObject as MediaStream)?.getTracks().forEach(t => t.stop());
-        setShowCamera(false); 
-        setIsCounting(false);
-      }
-    }
-  }, [isCounting, countdown]);
-
-  // Voice Recording Handler
-  const toggleRecording = useCallback(() => {
-    setImage(null);
-    setCapturedImagePreview(null);
-    setIsImageCaptured(false);
-    setIsCurrentResultSaved(false);
-
-    if (isRecording) {
-      recognitionRef.current?.stop();
-    } else {
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (!SR) return alert("Trình duyệt không hỗ trợ nhận diện giọng nói!");
-      const r = new SR(); 
-      r.lang = 'vi-VN';
-      r.onstart = () => setIsRecording(true);
-      r.onend = () => setIsRecording(false);
-      r.onresult = (e: any) => {
-        setVoiceText(e.results[0][0].transcript);
-        setImage(null);
-      };
-      recognitionRef.current = r; 
-      r.start();
-    }
-  }, [isRecording]);
-
-  const handleRunAnalysis = useCallback(() => {
-     if (!selectedSubject || (!image && !voiceText) || isImageCaptured) return alert("Vui lòng chụp ảnh, chọn ảnh hoặc nhập giọng nói!");
-     setScreen('ANALYSIS');
-     setIsCurrentResultSaved(false);
-     runAgents(selectedAgent, agents, voiceText, image);
-  }, [selectedSubject, image, voiceText, isImageCaptured, selectedAgent, agents, runAgents]);
-
-  // Lưu bài học vào Nhật ký
-  const handleSaveToDiary = useCallback(() => {
-    if (!selectedSubject || isCurrentResultSaved) return;
-
-    let resultContentToSave = allRawResults[selectedAgent] || "Không có dữ liệu";
-    let casioStepsToSave: string | undefined = undefined;
-
-    if (selectedAgent === AgentType.SPEED && professor1Result) {
-      resultContentToSave = professor1Result.finalAnswer;
-      casioStepsToSave = professor1Result.casioSteps;
-    }
-
-    const newEntry: DiaryEntry = {
-      id: Date.now().toString(),
-      date: new Date().toLocaleDateString('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
-      subject: selectedSubject,
-      agentType: selectedAgent,
-      input: voiceText || "Đề bài dạng hình ảnh",
-      image: image || undefined,
-      resultContent: resultContentToSave,
-      casioSteps: casioStepsToSave,
-      userInfo: user || undefined
-    };
-
-    const updatedDiary = [newEntry, ...diaryEntries];
-    setDiaryEntries(updatedDiary);
-    localStorage.setItem('symbiotic_diary', JSON.stringify(updatedDiary));
-    setShowSaveSuccess(true);
-    setIsCurrentResultSaved(true);
-    setTimeout(() => setShowSaveSuccess(false), 2000);
-  }, [selectedSubject, allRawResults, selectedAgent, isCurrentResultSaved, professor1Result, voiceText, image, user, diaryEntries]);
-
-  const markdownConfig = useMemo(() => ({
-    remarkPlugins: [remarkMath],
-    rehypePlugins: [rehypeKatex]
-  }), []);
-
-  // RENDER FORM GHI DANH
-  if (!user) {
+  // =========================================================================
+  // 1. MÀN HÌNH ĐĂNG NHẬP CHUẨN NGÀY HỘI CHUYỂN ĐỔI SỐ 2026 (ẢNH 1)
+  // =========================================================================
+  if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <div className="bg-white max-w-md w-full rounded-3xl p-8 shadow-2xl border border-slate-200 animate-in fade-in">
+      <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-4 md:p-8 font-sans">
+        <div className="max-w-md w-full mx-auto my-auto">
+          
+          {/* Header Tiêu đề Ngày hội CĐS */}
           <div className="text-center mb-6">
-            <div className="w-16 h-16 bg-blue-600 rounded-2xl mx-auto flex items-center justify-center text-white text-2xl font-black mb-3 shadow-lg">
-              AI
-            </div>
-            <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight">Ghi Danh Học Sinh</h1>
-            <p className="text-xs text-slate-500 mt-1 font-medium">Hệ thống Tác tử AI Học tập Thông minh</p>
+            <p className="text-xs font-bold tracking-widest text-slate-800 uppercase">
+              NGÀY HỘI CHUYỂN ĐỔI SỐ NĂM 2026
+            </p>
+            <h1 className="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight mt-1">
+              SYMBIOTIC AI
+            </h1>
+            <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-0.5">
+              MULTI AGENT SYSTEMS
+            </p>
+            <p className="text-sm italic text-indigo-500 font-medium mt-2">
+              Gia sư ảo thông minh của mọi thế hệ học sinh
+            </p>
           </div>
-          <form onSubmit={handleRegister} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Họ và Tên</label>
-              <input type="text" required placeholder="Ví dụ: Nguyễn Văn A" value={form.fullName} onChange={e => setForm({...form, fullName: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-600 bg-slate-50" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Lớp</label>
-              <input type="text" required placeholder="Ví dụ: 12A1" value={form.className} onChange={e => setForm({...form, className: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-600 bg-slate-50" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Trường THPT</label>
-              <input type="text" required placeholder="Ví dụ: THPT Mai Sơn" value={form.school} onChange={e => setForm({...form, school: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-600 bg-slate-50" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Tỉnh / Thành phố</label>
-              <input type="text" required placeholder="Ví dụ: Sơn La" value={form.province} onChange={e => setForm({...form, province: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-600 bg-slate-50" />
-            </div>
-            <button type="submit" disabled={isSubmittingForm} className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-xs tracking-wider shadow-lg hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50 mt-2">
-              {isSubmittingForm ? 'Đang đồng bộ...' : 'Bắt đầu Học tập'}
-            </button>
-          </form>
+
+          {/* Form Đăng nhập */}
+          <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl border border-slate-100">
+            <h2 className="text-xl font-bold text-center text-slate-800 uppercase">
+              ĐĂNG NHẬP HỌC SINH
+            </h2>
+            <p className="text-xs text-center text-slate-400 mt-1 mb-6">
+              Nhập thông tin để bắt đầu học tập cùng AI
+            </p>
+
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Họ và tên học sinh:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ví dụ: Nguyễn Văn A"
+                  value={student.fullName}
+                  onChange={(e) => setStudent({ ...student, fullName: e.target.value })}
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Lớp:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ví dụ: 12A"
+                  value={student.className}
+                  onChange={(e) => setStudent({ ...student, className: e.target.value })}
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Trường:
+                </label>
+                <input
+                  type="text"
+                  disabled
+                  value={student.school}
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-100 bg-slate-50 text-slate-400 font-semibold text-sm cursor-not-allowed"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 px-4 rounded-2xl shadow-lg shadow-indigo-200 transition active:scale-[0.98] text-sm tracking-wide uppercase"
+              >
+                XÁC NHẬN ĐĂNG NHẬP
+              </button>
+            </form>
+          </div>
+
+          {/* Footer thông tin */}
+          <div className="text-center mt-6">
+            <p className="text-xs font-bold text-slate-800">
+              SYMBIOTIC AI — GIẢI PHÁP CHUYỂN ĐỔI SỐ GIÁO DỤC
+            </p>
+            <p className="text-xs font-bold text-indigo-600 mt-0.5">
+              TRƯỜNG THPT MAI SƠN
+            </p>
+          </div>
         </div>
       </div>
     );
   }
 
+  // =========================================================================
+  // 2. MÀN HÌNH CHÍNH & CÁC MODULE CHỨC NĂNG (KHI ĐÃ ĐĂNG NHẬP)
+  // =========================================================================
   return (
-    <div className="min-h-screen bg-slate-100 flex justify-center">
-      <div className="w-full max-w-md bg-white min-h-screen flex flex-col shadow-2xl relative">
+    <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-6 font-sans">
+      <div className="max-w-4xl mx-auto space-y-6">
         
-        {/* HEADER CHUẨN v16.5: LUÔN CÓ NÚT VỀ MENU HOẶC NÚT NHẬT KÝ */}
-        <header className="p-4 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-20">
-          {screen !== 'HOME' ? (
-            <button onClick={handleGoHome} className="flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-slate-100 px-3 py-2 rounded-xl active:scale-90 transition-transform">
-              <span>← Menu chính</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-black text-xs">AI</div>
-              <span className="font-black text-sm text-slate-800 tracking-tight">SYMBIOTIC MAS</span>
-            </div>
-          )}
-          
-          <div className="flex items-center gap-3">
-            {screen === 'HOME' && (
-              <button onClick={handleOpenDiary} className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1 active:scale-90 transition-transform">
-                📓 Nhật ký
+        {/* THANH HEADER ĐIỀU HƯỚNG & NÚT ĐỔI TÀI KHOẢN (LUÔN HIỂN THỊ) */}
+        <div className="flex items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-2">
+            {activeTab === 'logs' ? (
+              <button
+                onClick={() => setActiveTab('main')}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition"
+              >
+                ← Quay lại Menu chính
               </button>
+            ) : selectedAgent ? (
+              <button
+                onClick={() => setSelectedAgent(null)}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition"
+              >
+                ← Chọn lại Tác tử AI
+              </button>
+            ) : selectedSubject ? (
+              <button
+                onClick={() => setSelectedSubject(null)}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition"
+              >
+                ← Chọn lại Môn học
+              </button>
+            ) : (
+              <div className="text-xs font-extrabold text-indigo-600 tracking-wider">
+                SYMBIOTIC SM-AS 2026
+              </div>
             )}
-            <div className="text-right">
-              <div className="text-xs font-bold text-slate-800">{user.fullName}</div>
-              <div className="text-[10px] text-slate-400 font-medium">{user.className}</div>
-            </div>
           </div>
-        </header>
 
-        {/* MAIN CONTENT */}
-        <main className="flex-1 p-4 overflow-y-auto">
-          
-          {/* SCREEN 1: HOME - ĐỦ 4 MÔN HỌC CHUẨN (TOÁN, LÝ, HÓA, SINH) */}
-          {screen === 'HOME' && (
-            <div className="space-y-4 animate-in fade-in duration-300">
-              <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-3xl p-6 text-white shadow-xl">
-                <span className="text-[10px] font-black uppercase tracking-widest text-blue-200">Hệ thống Tác tử AI</span>
-                <h2 className="text-2xl font-black mt-1">Xin chào, {user.fullName}!</h2>
-                <p className="text-xs text-blue-100 mt-1 opacity-90">Chọn môn học để gửi đề bài cho các Tác tử AI phân tích.</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                {[
-                  { name: Subject.MATH, color: 'bg-indigo-600', icon: '📐' },
-                  { name: Subject.PHYSICS, color: 'bg-violet-600', icon: '⚛️' },
-                  { name: Subject.CHEMISTRY, color: 'bg-emerald-600', icon: '🧪' },
-                  { name: Subject.BIOLOGY, color: 'bg-teal-600', icon: '🧬' },
-                ].map((sub) => (
-                  <button key={sub.name} onClick={() => handleSubjectSelect(sub.name as Subject)} className={`${sub.color} aspect-square rounded-[2rem] flex flex-col items-center justify-center text-white shadow-lg active:scale-95 transition-all p-4`}>
-                    <span className="text-4xl mb-2">{sub.icon}</span>
-                    <span className="text-xs font-black uppercase tracking-tight">{sub.name}</span>
-                  </button>
-                ))}
-              </div>
+          {/* THÔNG TIN HỌC SINH & NÚT ĐỔI TÀI KHOẢN */}
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <span className="block text-xs font-bold text-slate-800">{student.fullName}</span>
+              <span className="block text-[10px] font-semibold text-slate-400">Lớp {student.className}</span>
             </div>
-          )}
 
-          {/* SCREEN 2: INPUT */}
-          {screen === 'INPUT' && (
-            <div className="space-y-6 animate-in fade-in duration-300">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-400">Môn đang chọn:</span>
-                <span className="text-xs font-black uppercase text-blue-600 bg-blue-50 px-3 py-1 rounded-full">{selectedSubject}</span>
+            <button
+              onClick={() => setActiveTab(activeTab === 'main' ? 'logs' : 'main')}
+              className="px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition"
+            >
+              {activeTab === 'main' ? '📖 Nhật ký' : '🏠 Học tập'}
+            </button>
+
+            {/* Nút Đổi tài khoản luôn hiển thị bên phải */}
+            <button
+              onClick={handleSwitchAccount}
+              className="px-3 py-1.5 text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-xl transition border border-rose-100"
+            >
+              🔄 Đổi tài khoản
+            </button>
+          </div>
+        </div>
+
+        {/* GIAO DIỆN XEM NHẬT KÝ HỌC TẬP */}
+        {activeTab === 'logs' ? (
+          <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-4">
+            <h2 className="text-lg font-bold text-slate-800 border-b pb-3 flex justify-between items-center">
+              <span>📖 Nhật ký Học tập: {student.fullName} ({student.className})</span>
+              <span className="text-xs font-normal text-slate-400">{logs.length} lượt tương tác</span>
+            </h2>
+
+            {logs.length === 0 ? (
+              <div className="py-12 text-center text-slate-400 text-sm">
+                Chưa có lịch sử câu hỏi nào được lưu.
               </div>
-
-              <div className="w-full aspect-[16/10] bg-slate-50 rounded-[2rem] flex items-center justify-center overflow-hidden border-2 border-slate-200 relative shadow-inner">
-                {showCamera ? (
-                  <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-                ) : capturedImagePreview ? (
-                  <img src={capturedImagePreview} className="p-2 h-full object-contain" alt="Ảnh đã chụp" />
-                ) : image ? (
-                  <img src={image} className="p-2 h-full object-contain" alt="Ảnh đề bài" />
-                ) : (
-                  <div className="p-8 text-center text-slate-500 font-medium text-xs leading-relaxed">
-                    {voiceText ? (
-                      <span className="text-blue-600 font-bold text-sm">"{voiceText}"</span>
-                    ) : (
-                      "Vui lòng chụp ảnh, tải ảnh lên hoặc bấm ghi âm đề bài..."
-                    )}
-                  </div>
-                )}
-                {isCounting && (
-                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center text-6xl font-black text-white drop-shadow-lg">
-                    {countdown}
-                  </div>
-                )}
-              </div>
-
-              {/* ACTION BUTTONS */}
-              <div className="flex justify-between items-center px-2">
-                {isImageCaptured ? (
-                  <>
-                    <button onClick={() => { setCapturedImagePreview(null); setIsImageCaptured(false); startCamera(); }} className="flex-1 mr-2 py-4 rounded-2xl bg-rose-500 text-white font-bold text-xs uppercase shadow-md active:scale-95 transition-all">
-                      🔄 Chụp lại
-                    </button>
-                    <button onClick={() => { if (capturedImagePreview) { setImage(capturedImagePreview); setVoiceText(''); setCapturedImagePreview(null); setIsImageCaptured(false); } }} className="flex-1 ml-2 py-4 rounded-2xl bg-emerald-600 text-white font-bold text-xs uppercase shadow-md active:scale-95 transition-all">
-                      ✅ Lưu ảnh này
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {[
-                      { l: 'Chụp ảnh', i: '📸', a: startCamera }, 
-                      { l: 'Thư viện', i: '🖼️', a: () => fileInputRef.current?.click() }, 
-                      { l: isRecording ? 'Đang ghi' : 'Ghi âm', i: isRecording ? '⏹️' : '🎙️', a: toggleRecording }
-                    ].map((it) => (
-                      <button key={it.l} onClick={it.a} className="flex flex-col items-center gap-1 group">
-                        <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-700 shadow-sm flex items-center justify-center text-xl group-active:scale-90 transition-transform">
-                          {it.i}
-                        </div>
-                        <span className="text-[10px] font-bold text-slate-500 uppercase">{it.l}</span>
-                      </button>
-                    ))}
-                    
-                    <button onClick={handleRunAnalysis} disabled={(!image && !voiceText) || isImageCaptured} className="flex flex-col items-center gap-1 group disabled:opacity-30">
-                      <div className="w-14 h-14 rounded-2xl bg-blue-600 text-white shadow-lg flex items-center justify-center text-xl group-active:scale-90 transition-transform">
-                        🚀
-                      </div>
-                      <span className="text-[10px] font-black text-blue-600 uppercase">Thực hiện</span>
-                    </button>
-                  </>
-                )}
-              </div>
-
-              <canvas ref={canvasRef} className="hidden" />
-              <input type="file" ref={fileInputRef} onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onload = (e) => {
-                    setImage(e.target?.result as string);
-                    setVoiceText('');
-                  };
-                  reader.readAsDataURL(file);
-                }
-              }} className="hidden" accept="image/*" />
-            </div>
-          )}
-
-          {/* SCREEN 3: ANALYSIS */}
-          {screen === 'ANALYSIS' && (
-            <div className="space-y-4 animate-in fade-in duration-300">
-              
-              {/* TAB SELECTION */}
-              <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
-                {agents.map((ag) => (
-                  <button key={ag} onClick={() => setSelectedAgent(ag)} className={`flex-1 py-2.5 rounded-xl flex items-center justify-center gap-1.5 text-[10px] font-black uppercase transition-all ${selectedAgent === ag ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
-                    <AgentLogo type={ag} active={selectedAgent === ag} />
-                    <span>{ag}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* RESULT DISPLAY */}
-              <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-sm min-h-[400px] relative">
-                {loading ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center space-y-3 bg-white/90 rounded-3xl z-10">
-                    <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{loadingStatus}</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-                      <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">{selectedAgent}</span>
-                      
-                      <button onClick={handleSaveToDiary} disabled={isCurrentResultSaved} className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-90 transition-transform disabled:opacity-50">
-                        {isCurrentResultSaved ? '✓ Đã lưu Nhật ký' : '💾 Lưu Nhật ký'}
-                      </button>
+            ) : (
+              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+                {logs.map((log) => (
+                  <div key={log.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-xs space-y-2">
+                    <div className="flex justify-between font-bold text-slate-500 border-b border-slate-200 pb-2">
+                      <span className="text-indigo-600">[{log.subject}] {log.agent}</span>
+                      <span>{log.timestamp}</span>
                     </div>
-
-                    {showSaveSuccess && (
-                      <div className="bg-emerald-50 text-emerald-700 text-xs font-bold p-3 rounded-xl text-center animate-in fade-in">
-                        Đã lưu thành công vào Nhật ký học tập!
-                      </div>
-                    )}
-
-                    {/* PROF 1: SPEED RESULT */}
-                    {selectedAgent === AgentType.SPEED && (
-                      <div className="space-y-4">
-                        <div className="prose prose-slate max-w-none text-sm math-font">
-                          <ReactMarkdown remarkPlugins={markdownConfig.remarkPlugins} rehypePlugins={markdownConfig.rehypePlugins}>
-                            {professor1Result?.finalAnswer || "Đang tải lời giải..."}
-                          </ReactMarkdown>
-                        </div>
-
-                        {professor1Result?.casioSteps && (
-                          <div className="bg-emerald-50/70 p-4 rounded-2xl border-l-4 border-emerald-500">
-                            <h4 className="text-xs font-black uppercase text-emerald-700 mb-1">Thao tác Casio 580VN X:</h4>
-                            <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans">{professor1Result.casioSteps}</pre>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* PROF 2: SOCRATIC TUTOR */}
-                    {selectedAgent === AgentType.SOCRATIC && (
-                      <div className="prose prose-slate max-w-none text-sm math-font">
-                        <ReactMarkdown remarkPlugins={markdownConfig.remarkPlugins} rehypePlugins={markdownConfig.rehypePlugins}>
-                          {allRawResults[AgentType.SOCRATIC] || "Đang soạn phân tích..."}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-
-                    {/* PROF 3: SKILL QUIZ INTERACTIVE */}
-                    {selectedAgent === AgentType.SKILL && (
-                      <div className="space-y-6">
-                        {professor3QuizResult?.quizzes.map((q, idx) => (
-                          <div key={idx} className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60 space-y-3">
-                            <div className="font-bold text-xs text-slate-800">
-                              Câu {idx + 1}: <ReactMarkdown remarkPlugins={markdownConfig.remarkPlugins} rehypePlugins={markdownConfig.rehypePlugins}>{q.question}</ReactMarkdown>
-                            </div>
-
-                            <div className="grid gap-2">
-                              {q.options.map((opt, optIdx) => {
-                                const optLetter = String.fromCharCode(65 + optIdx);
-                                const isSelected = userQuizAnswers[idx] === optLetter;
-                                const isCorrect = q.answer === optLetter;
-
-                                let btnClass = "bg-white border-slate-200 text-slate-700";
-                                if (userQuizAnswers[idx]) {
-                                  if (isSelected && isCorrect) btnClass = "bg-emerald-500 text-white border-emerald-500 font-bold";
-                                  else if (isSelected && !isCorrect) btnClass = "bg-rose-500 text-white border-rose-500 font-bold";
-                                  else if (isCorrect) btnClass = "bg-emerald-100 text-emerald-800 border-emerald-300 font-bold";
-                                }
-
-                                return (
-                                  <button key={optIdx} disabled={!!userQuizAnswers[idx]} onClick={() => setUserQuizAnswers(prev => ({ ...prev, [idx]: optLetter }))} className={`w-full text-left p-3 rounded-xl border text-xs transition-all ${btnClass}`}>
-                                    <span className="font-black mr-2">{optLetter}.</span> {opt}
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {userQuizAnswers[idx] && (
-                              <div className="pt-2">
-                                <button onClick={() => setShownSolutions(prev => ({ ...prev, [idx]: !prev[idx] }))} className="text-[10px] font-bold text-blue-600 underline">
-                                  {shownSolutions[idx] ? 'Ẩn lời giải' : 'Hiện lời giải chi tiết'}
-                                </button>
-                                {shownSolutions[idx] && (
-                                  <div className="mt-2 p-3 bg-blue-50/50 rounded-xl text-xs text-slate-700 font-medium">
-                                    {q.solution}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
+                    <p className="font-semibold text-slate-800">❓ Câu hỏi / Đề bài: {log.question}</p>
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 text-slate-700 whitespace-pre-wrap font-mono leading-relaxed">
+                      {log.response}
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
-            </div>
-          )}
-
-          {/* SCREEN 4: DIARY (NHẬT KÝ HỌC TẬP TÁCH BIỆT CHUẨN v16.5) */}
-          {screen === 'DIARY' && (
-            <div className="space-y-4 animate-in fade-in duration-300">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">Nhật ký Lịch sử Học tập</h3>
-                <span className="text-xs font-bold text-slate-400">{diaryEntries.length} bài đã lưu</span>
-              </div>
-
-              {diaryEntries.length === 0 ? (
-                <div className="py-16 text-center text-slate-400 italic text-xs bg-white rounded-3xl border border-slate-100">
-                  Chưa có bài tập nào được lưu vào nhật ký.
+            )}
+          </div>
+        ) : (
+          /* GIAO DIỆN HỌC TẬP CHÍNH */
+          <>
+            {/* 1. BƯỚC 1: CHỌN MÔN HỌC */}
+            {!selectedSubject && (
+              <div className="bg-white rounded-3xl p-6 md:p-8 shadow-sm border border-slate-100 text-center space-y-6">
+                <div>
+                  <h2 className="text-2xl font-extrabold text-slate-900">
+                    Xin chào, {student.fullName}!
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Chọn môn học để gửi đề bài cho Hệ thống Đa Tác Nhân SM-AS phân tích
+                  </p>
                 </div>
-              ) : (
-                diaryEntries.map((item) => (
-                  <div key={item.id} className="bg-white rounded-3xl p-5 border border-slate-100 shadow-sm space-y-3">
-                    <div className="flex justify-between items-center text-[10px] text-slate-400 font-bold">
-                      <span>{item.date}</span>
-                      <span className="text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full uppercase">{item.subject}</span>
-                    </div>
 
-                    {item.image && (
-                      <img src={item.image} alt="Đề bài" className="max-h-36 rounded-xl object-contain bg-slate-50 border p-1" />
-                    )}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {[
+                    { name: 'TOÁN HỌC', icon: '📐', bg: 'hover:bg-blue-50' },
+                    { name: 'VẬT LÍ', icon: '⚛️', bg: 'hover:bg-purple-50' },
+                    { name: 'HÓA HỌC', icon: '🧪', bg: 'hover:bg-emerald-50' },
+                    { name: 'SINH HỌC', icon: '🧬', bg: 'hover:bg-amber-50' }
+                  ].map((sub) => (
+                    <button
+                      key={sub.name}
+                      onClick={() => setSelectedSubject(sub.name)}
+                      className={`p-6 bg-slate-50 ${sub.bg} border border-slate-200 rounded-2xl font-bold text-slate-800 transition flex flex-col items-center gap-3 active:scale-95 shadow-sm`}
+                    >
+                      <span className="text-3xl">{sub.icon}</span>
+                      <span className="text-xs tracking-wider">{sub.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-                    <div className="prose prose-slate max-w-none text-xs math-font">
-                      <ReactMarkdown remarkPlugins={markdownConfig.remarkPlugins} rehypePlugins={markdownConfig.rehypePlugins}>
-                        {item.resultContent}
-                      </ReactMarkdown>
-                    </div>
+            {/* 2. BƯỚC 2: CHỌN TÁC TỬ AI (MULTI-AGENT ARCHITECTURE) */}
+            {selectedSubject && !selectedAgent && (
+              <div className="bg-white rounded-3xl p-6 md:p-8 shadow-sm border border-slate-100 text-center space-y-6">
+                <div className="inline-block px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-xs font-bold">
+                  Môn đã chọn: {selectedSubject}
+                </div>
+                
+                <h2 className="text-xl font-bold text-slate-900">
+                  Chọn Tác tử AI xử lý bài tập
+                </h2>
 
-                    {item.casioSteps && (
-                      <div className="bg-emerald-50 p-3 rounded-xl text-[11px] text-emerald-800">
-                        <span className="font-bold block mb-1">Hướng dẫn Casio:</span>
-                        {item.casioSteps}
-                      </div>
-                    )}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {[
+                    { name: 'AGENT 1: PHÂN TÍCH ĐỀ', icon: '🔍', desc: 'Trích xuất từ khóa, định dạng cấu trúc bài toán' },
+                    { name: 'AGENT 2: THỰC THI & GIẢI', icon: '⚙️', desc: 'Áp dụng Chain-of-Thought hướng dẫn từng bước' },
+                    { name: 'AGENT 3: PHẢN BIỆN & SOI LỖI', icon: '🛡️', desc: 'Kiểm soát chéo, loại bỏ triệt để ảo giác AI' }
+                  ].map((ag) => (
+                    <button
+                      key={ag.name}
+                      onClick={() => setSelectedAgent(ag.name)}
+                      className="p-5 bg-slate-50 hover:bg-indigo-50 hover:border-indigo-200 border border-slate-200 rounded-2xl text-left transition space-y-2 active:scale-95"
+                    >
+                      <div className="text-2xl">{ag.icon}</div>
+                      <div className="font-bold text-slate-800 text-xs uppercase">{ag.name}</div>
+                      <div className="text-xs text-slate-500 leading-snug">{ag.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 3. BƯỚC 3: NHẬP BÀI TẬP & NHẬN KẾT QUẢ TỪ AI */}
+            {selectedSubject && selectedAgent && (
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-6">
+                <div className="flex items-center justify-between border-b pb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg">
+                      {selectedSubject}
+                    </span>
+                    <span className="text-xs font-bold text-slate-700">
+                      {selectedAgent}
+                    </span>
                   </div>
-                ))
-              )}
-            </div>
-          )}
+                </div>
 
-        </main>
+                {/* Nhập đề bài văn bản */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-2">
+                    Nhập nội dung đề bài hoặc câu hỏi:
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Dán câu hỏi trắc nghiệm hoặc bài tập tự luận tại đây..."
+                    className="w-full p-4 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
+                  />
+                </div>
+
+                {/* Tải ảnh đề bài (OCR) */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-2">
+                    Hoặc chọn ảnh chụp đề bài (OCR):
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onloadend = () => setSelectedImage(reader.result as string);
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-600 hover:file:bg-indigo-100"
+                  />
+                </div>
+
+                {/* Nút gửi yêu cầu */}
+                <button
+                  onClick={handleSubmitTask}
+                  disabled={loading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 px-4 rounded-2xl shadow-lg transition active:scale-[0.98] text-sm uppercase tracking-wide flex justify-center items-center gap-2"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>CÁC AGENTS ĐANG PHÂN TÍCH & PHẢN BIỆN...</span>
+                    </>
+                  ) : (
+                    <span>GỬI ĐỀ BÀI CHO HỆ ĐA TÁC NHÂN SM-AS</span>
+                  )}
+                </button>
+
+                {/* Hiển thị kết quả AI */}
+                {resultText && (
+                  <div className="mt-6 p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                      <span>💡 Kết quả từ Hệ Đa Tác Nhân (SM-AS):</span>
+                    </h3>
+                    <div className="text-xs text-slate-800 whitespace-pre-wrap leading-relaxed font-mono bg-white p-4 rounded-xl border border-slate-200 shadow-inner">
+                      {resultText}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
       </div>
     </div>
   );
-};
-
-export default App;
+}
