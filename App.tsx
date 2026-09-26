@@ -1,422 +1,758 @@
-// File: App.tsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import { Subject, AgentType, Professor1Result, Professor3QuizResult, QuizQuestion, UserProfile, DiaryEntry } from './types';
+import { Layout } from './components/Layout';
+import { processTask, fetchTTSAudio, playStoredAudio, generateSummary } from './services/geminiService';
+import { compressImage } from './services/imageProcessor';
 
-type SubjectType = 'TOÁN HỌC' | 'VẬT LÍ' | 'HÓA HỌC' | 'NHẬT KÝ' | null;
-type AgentType = 'ĐIỀU PHỐI MAS' | 'GIẢI NHANH 1S' | 'GIA SƯ AI' | 'LUYỆN SKILL';
+// URL Web App Google Apps Script
+const GOOGLE_SHEET_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxiyXqRez46ieiWJcaJiy_siEThYgiDCf7fNgST3Zky8KOdNSyGy5G4Tzt2rsCHqL8Ajw/exec";
 
-interface StudentInfo {
-  name: string;
-  className: string;
-  school: string;
-}
+const AgentLogo = React.memo(({ type, active }: { type: AgentType, active: boolean }) => {
+  const cls = `w-3.5 h-3.5 ${active ? 'text-blue-600' : 'text-white'} transition-colors duration-300`;
+  switch (type) {
+    case AgentType.GIAI_NHANH_1S: 
+      return <svg className={cls} viewBox="0 0 24 24" fill="currentColor"><path d="M13 10V3L4 14H11V21L20 10H13Z" /></svg>;
+    case AgentType.GIA_SU_AI: 
+      return <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+    case AgentType.LUYEN_SKILL: 
+      return <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+    default: 
+      return null;
+  }
+});
 
-export default function App() {
-  // Quản lý trạng thái Đăng nhập / Tài khoản
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true); // Mặc định true để dùng ngay
-  const [student, setStudent] = useState<StudentInfo>({
-    name: 'CHUNG',
-    className: '12A',
-    school: 'THPT MAI SƠN - Sơn La',
+const App: React.FC = () => {
+  // User Registration State
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [form, setForm] = useState<UserProfile>({
+    fullName: '',
+    className: '',
+    school: '',
+    province: 'Sơn La'
   });
+  const [isRegistering, setIsRegistering] = useState(false);
 
-  // State nhập liệu cho màn hình đổi tài khoản
-  const [inputName, setInputName] = useState(student.name);
-  const [inputClass, setInputClass] = useState(student.className);
-
-  // Quản lý trạng thái môn học & tác tử
-  const [selectedSubject, setSelectedSubject] = useState<SubjectType>(null);
-  const [activeAgent, setActiveAgent] = useState<AgentType>('GIẢI NHANH 1S');
-  const [inputText, setInputText] = useState('');
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
-  
-  // Trạng thái chuyển sang Bước 3 (Hiện menu Tác tử & Gọi API)
-  const [isProcessing, setIsProcessing] = useState(false);
+  // App Navigation States
+  const [screen, setScreen] = useState<'HOME' | 'INPUT' | 'ANALYSIS' | 'DIARY'>('HOME');
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<AgentType>(AgentType.GIAI_NHANH_1S);
   const [loading, setLoading] = useState(false);
-  const [responseOutput, setResponseOutput] = useState<string | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState('');
 
+  // Results State
+  const [allRawResults, setAllRawResults] = useState<Partial<Record<AgentType, string>>>({});
+  const [allAudios, setAllAudios] = useState<Partial<Record<AgentType, string>>>({});
+  const [professor1Result, setProfessor1Result] = useState<Professor1Result | null>(null);
+  const [professor3QuizResult, setProfessor3QuizResult] = useState<Professor3QuizResult | null>(null);
+  const [agentProcessingStates, setAgentProcessingStates] = useState<Partial<Record<AgentType, 'loading' | 'error' | null>>>({});
+
+  // Quiz Interaction State
+  const [userSelectedAnswers, setUserSelectedAnswers] = useState<(string | null)[]>([]);
+  const [quizFeedback, setQuizFeedback] = useState<('correct' | 'incorrect' | null)[]>([]);
+  const [professor3ShownSolutionIndex, setProfessor3ShownSolutionIndex] = useState<number | null>(null);
+
+  // Inputs & Camera
+  const [image, setImage] = useState<string | null>(null);
+  const [voiceText, setVoiceText] = useState('');
+  const [capturedImagePreview, setCapturedImagePreview] = useState<string | null>(null);
+  const [isImageCaptured, setIsImageCaptured] = useState<boolean>(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const [isCounting, setIsCounting] = useState(false);
+  const [countdown, setCountdown] = useState(3);
+  const [isRecording, setIsRecording] = useState(false);
+
+  // Diary & Audio
+  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
+  const [isCurrentResultSaved, setIsCurrentResultSaved] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  // Xử lý khi chọn/chụp ảnh
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-        setIsProcessing(true);
-        executeAgentTask(activeAgent, reader.result as string, inputText);
-      };
-      reader.readAsDataURL(file);
+  const agents = Object.values(AgentType);
+
+  // Initial Load (User profile & Local History)
+  useEffect(() => {
+    const savedUser = localStorage.getItem('symbiotic_user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
     }
-  };
+    const savedDiary = localStorage.getItem('symbiotic_diary');
+    if (savedDiary) setDiaryEntries(JSON.parse(savedDiary));
+  }, []);
 
-  // Hàm gọi Vercel Serverless API (/api/gemini)
-  const executeAgentTask = async (agent: AgentType, imgData = imagePreview, textData = inputText) => {
-    setLoading(true);
-    setResponseOutput(null);
+  useEffect(() => {
+    if (showSaveSuccess) {
+      const timer = setTimeout(() => setShowSaveSuccess(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [showSaveSuccess]);
 
-    try {
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          student: student,
-          subject: selectedSubject,
-          agent: agent,
-          input: textData,
-          image: imgData,
-          action: 'PROCESS_TASK'
-        })
-      });
-
-      const data = await res.json();
-      if (data.error) {
-        setResponseOutput(`Lỗi: ${data.error}`);
-      } else {
-        setResponseOutput(data.text);
+  useEffect(() => {
+    return () => {
+      if (audioSourceRef.current) {
+        audioSourceRef.current.stop();
+        audioSourceRef.current.disconnect();
+        audioSourceRef.current = null;
+        setIsSpeaking(false);
       }
-    } catch (err: any) {
-      setResponseOutput(`Lỗi kết nối máy chủ AI: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+  }, [screen, selectedAgent]);
 
-  // Nút THỰC HIỆN
-  const handleStartProcess = () => {
-    if (!inputText && !imagePreview) {
-      alert('Vui lòng chụp ảnh, chọn ảnh từ thư viện hoặc nhập nội dung câu hỏi!');
-      return;
-    }
-    setIsProcessing(true);
-    executeAgentTask(activeAgent);
-  };
-
-  // Chuyển Agent
-  const handleAgentChange = (agent: AgentType) => {
-    setActiveAgent(agent);
-    executeAgentTask(agent);
-  };
-
-  // Reset về Menu chọn môn
-  const handleResetSubject = () => {
-    setSelectedSubject(null);
-    setIsProcessing(false);
-    setResponseOutput(null);
-    setImagePreview(null);
-    setInputText('');
-  };
-
-  // NÚT ĐỔI TÀI KHOẢN: Thoát hoàn toàn ra Màn hình Đăng nhập
-  const handleLogout = () => {
-    handleResetSubject();
-    setIsLoggedIn(false);
-  };
-
-  // Xử lý Đăng nhập tài khoản mới
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  // Handle Registration Submit
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputName.trim() || !inputClass.trim()) {
-      alert('Vui lòng nhập đầy đủ Tên và Lớp!');
+    if (!form.fullName || !form.className || !form.school || !form.province) {
+      alert("Vui lòng điền đầy đủ thông tin ghi danh!");
       return;
     }
-    setStudent({
-      name: inputName.toUpperCase(),
-      className: inputClass.toUpperCase(),
-      school: 'THPT MAI SƠN - Sơn La',
-    });
-    setIsLoggedIn(true);
+    setIsRegistering(true);
+    try {
+      if (GOOGLE_SHEET_WEB_APP_URL && GOOGLE_SHEET_WEB_APP_URL !== "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL") {
+        fetch(GOOGLE_SHEET_WEB_APP_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(form)
+        }).catch(err => console.error("Lỗi đồng bộ Sheets:", err));
+      }
+      localStorage.setItem('symbiotic_user', JSON.stringify(form));
+      setUser(form);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
-  return (
-    <div className="min-h-screen bg-white text-slate-800 font-sans flex flex-col items-center justify-between p-4 selection:bg-indigo-100">
-      
-      {/* HEADER THƯƠNG HIỆU SYMBIOTIC AI */}
-      <header className="text-center my-3 w-full">
-        <h1 className="text-2xl font-black tracking-tight text-slate-900">SYMBIOTIC AI</h1>
-        <p className="text-[11px] font-bold tracking-widest text-slate-400 uppercase mt-0.5">MULTI AGENT SYSTEMS</p>
-        <p className="text-xs italic text-indigo-500 mt-1">Gia sư ảo thông minh của mọi thế hệ học sinh</p>
+  const handleLogout = () => {
+    setUser(null);
+    localStorage.removeItem('symbiotic_user');
+    localStorage.removeItem('user');
+  };
+
+  const resetAppState = useCallback(() => {
+    setAllRawResults({});
+    setAllAudios({});
+    setProfessor1Result(null);
+    setProfessor3QuizResult(null);
+    setAgentProcessingStates({});
+    setUserSelectedAnswers([]);
+    setQuizFeedback([]);
+    setImage(null);
+    setVoiceText('');
+    setCapturedImagePreview(null);
+    setIsImageCaptured(false);
+    setSelectedAgent(AgentType.GIAI_NHANH_1S);
+    setLoading(false);
+    setLoadingStatus('');
+    setIsCurrentResultSaved(false);
+  }, []);
+
+  const handleSubjectSelect = useCallback((sub: Subject) => {
+    resetAppState();
+    if (sub === Subject.DIARY) {
+      setSelectedSubject(null);
+      setScreen('DIARY');
+    } else {
+      setSelectedSubject(sub);
+      setScreen('INPUT');
+    }
+  }, [resetAppState]);
+
+  const startCamera = useCallback(async () => {
+    setImage(null);
+    setVoiceText('');
+    setCapturedImagePreview(null);
+    setIsImageCaptured(false);
+    setIsCurrentResultSaved(false);
+    setShowCamera(true); setIsCounting(true); setCountdown(3);
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (videoRef.current) videoRef.current.srcObject = s;
+    } catch { 
+      setShowCamera(false); 
+      setIsCounting(false);
+      alert("Không thể truy cập camera. Vui lòng kiểm tra quyền.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isCounting && countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (isCounting && countdown === 0) {
+      if (videoRef.current && canvasRef.current) {
+        canvasRef.current.width = videoRef.current.videoWidth;
+        canvasRef.current.height = videoRef.current.videoHeight;
+        canvasRef.current.getContext('2d')?.drawImage(videoRef.current, 0, 0);
         
-        {/* Nhãn môn học hiển thị khi chọn môn */}
-        {selectedSubject && isLoggedIn && (
-          <div className="mt-2 inline-block bg-indigo-50 text-indigo-600 border border-indigo-100 px-4 py-1 rounded-full text-xs font-bold tracking-wide">
-            {selectedSubject}
+        const rawBase64 = canvasRef.current.toDataURL('image/jpeg', 0.9);
+        compressImage(rawBase64).then((compressed) => {
+          setCapturedImagePreview(compressed);
+          setIsImageCaptured(true);
+        });
+        
+        (videoRef.current.srcObject as MediaStream)?.getTracks().forEach(t => t.stop());
+        setShowCamera(false); 
+        setIsCounting(false);
+      }
+    }
+  }, [isCounting, countdown]);
+
+  const toggleRecording = useCallback(() => {
+    setImage(null);
+    setCapturedImagePreview(null);
+    setIsImageCaptured(false);
+    setIsCurrentResultSaved(false);
+    if (isRecording) {
+      recognitionRef.current?.stop();
+    } else {
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SR) return alert("Trình duyệt không hỗ trợ nhận diện giọng nói!");
+      const r = new SR(); r.lang = 'vi-VN';
+      r.onstart = () => setIsRecording(true);
+      r.onend = () => setIsRecording(false);
+      r.onresult = (e: any) => {
+        const text = e.results[0][0].transcript;
+        setVoiceText(text);
+        setImage(null);
+        setIsCurrentResultSaved(false);
+      };
+      recognitionRef.current = r; r.start();
+    }
+  }, [isRecording]);
+
+  const handleRetakePhoto = useCallback(() => {
+    setCapturedImagePreview(null);
+    setIsImageCaptured(false);
+    startCamera();
+  }, [startCamera]);
+
+  const handleSaveCapturedPhoto = useCallback(() => {
+    if (capturedImagePreview) {
+      setImage(capturedImagePreview);
+      setVoiceText('');
+      setCapturedImagePreview(null);
+      setIsImageCaptured(false);
+      setIsCurrentResultSaved(false);
+    }
+  }, [capturedImagePreview]);
+
+  const fetchAgentData = useCallback(async (agent: AgentType, sub: Subject, text: string, img?: string) => {
+    setAgentProcessingStates(prev => ({ ...prev, [agent]: 'loading' }));
+    setAllRawResults(prev => ({ ...prev, [agent]: '' }));
+    if (agent === AgentType.GIAI_NHANH_1S) setProfessor1Result(null);
+    if (agent === AgentType.LUYEN_SKILL) {
+      setProfessor3QuizResult(null);
+      setUserSelectedAnswers([]);
+      setQuizFeedback([]);
+    }
+    setAllAudios(prev => ({ ...prev, [agent]: '' }));
+    try {
+      const res = await processTask(sub, agent, text, img);
+      setAllRawResults(prev => ({ ...prev, [agent]: res }));
+      let contentForTTSAndSummary = res;
+      if (agent === AgentType.GIAI_NHANH_1S) {
+        try {
+          const parsed: Professor1Result = JSON.parse(res);
+          setProfessor1Result(parsed);
+          contentForTTSAndSummary = parsed.finalAnswer; 
+        } catch (parseError) {
+          console.error(`Failed to parse ${agent} JSON response:`, parseError);
+          setAgentProcessingStates(prev => ({ ...prev, [agent]: 'error' }));
+          setAllRawResults(prev => ({ ...prev, [agent]: `Lỗi phân tích kết quả từ chuyên gia ${agent}. Vui lòng thử lại.` }));
+          setProfessor1Result(null);
+          return;
+        }
+      } else if (agent === AgentType.LUYEN_SKILL) {
+        try {
+          const parsed: Professor3QuizResult = JSON.parse(res);
+          setProfessor3QuizResult(parsed);
+          setUserSelectedAnswers(new Array(parsed.quizzes.length).fill(null));
+          setQuizFeedback(new Array(parsed.quizzes.length).fill(null));
+          if (parsed.quizzes && parsed.quizzes.length > 0) {
+            contentForTTSAndSummary = `Bài tập tương tự thứ nhất: ${parsed.quizzes[0].question}`;
+          } else {
+            contentForTTSAndSummary = `Chuyên gia ${agent} đã tạo ra các bài tập tương tự.`;
+          }
+        } catch (parseError) {
+          console.error(`Failed to parse ${agent} JSON response:`, parseError);
+          setAgentProcessingStates(prev => ({ ...prev, [agent]: 'error' }));
+          setAllRawResults(prev => ({ ...prev, [agent]: `Lỗi phân tích kết quả từ chuyên gia ${agent}. Vui lòng thử lại.` }));
+          setProfessor3QuizResult(null);
+          return;
+        }
+      }
+      
+      if (contentForTTSAndSummary && contentForTTSAndSummary.trim()) {
+        const summary = await generateSummary(contentForTTSAndSummary);
+        if (summary) fetchTTSAudio(summary).then(audio => { if (audio) setAllAudios(prev => ({ ...prev, [agent]: audio })); });
+      }
+      setAgentProcessingStates(prev => ({ ...prev, [agent]: null }));
+    } catch (e: any) {
+      setAgentProcessingStates(prev => ({ ...prev, [agent]: 'error' }));
+      setAllRawResults(prev => ({ ...prev, [agent]: `Chuyên gia ${agent} hiện đang bận hoặc có lỗi xảy ra. Vui lòng thử lại.` }));
+      if (agent === AgentType.GIAI_NHANH_1S) setProfessor1Result(null);
+      if (agent === AgentType.LUYEN_SKILL) setProfessor3QuizResult(null);
+    }
+  }, []); 
+
+  const runAnalysis = useCallback(async () => {
+    if (!selectedSubject || (!image && !voiceText) || isImageCaptured) {
+        return alert("Vui lòng nhập đề bài hoặc lưu ảnh!");
+    }
+    
+    setScreen('ANALYSIS');
+    setLoading(true);
+    setLoadingStatus('Đang gửi yêu cầu đến các Chuyên gia AI...');
+    setIsCurrentResultSaved(false);
+    setProfessor3ShownSolutionIndex(null);
+    setAllRawResults({});
+    setAllAudios({});
+    setProfessor1Result(null);
+    setProfessor3QuizResult(null);
+    setAgentProcessingStates({});
+    setUserSelectedAnswers([]);
+    setQuizFeedback([]);
+    const agentPromises = agents.map(agent => 
+        fetchAgentData(agent, selectedSubject, voiceText, image || undefined)
+    );
+    await Promise.allSettled(agentPromises);
+    
+    setLoading(false);
+    setLoadingStatus('');
+  }, [selectedSubject, image, voiceText, isImageCaptured, fetchAgentData, agents]);
+
+  const handleSaveToDiary = useCallback(() => {
+    if (!selectedSubject || !allRawResults[selectedAgent] || isCurrentResultSaved) return;
+    let resultContentToSave: string;
+    let professor3QuizzesToSave: Professor3QuizResult | undefined = undefined;
+    if (selectedAgent === AgentType.GIAI_NHANH_1S && professor1Result) {
+      resultContentToSave = professor1Result.finalAnswer;
+    } else if (selectedAgent === AgentType.LUYEN_SKILL && professor3QuizResult) {
+      resultContentToSave = `Đã tạo ${professor3QuizResult.quizzes.length} bài tập tương tự.`;
+      professor3QuizzesToSave = professor3QuizResult;
+    } else {
+      resultContentToSave = allRawResults[selectedAgent]!;
+    }
+    const studentInfoStr = user ? `${user.fullName} (${user.className} - ${user.school})` : undefined;
+    const newEntry: DiaryEntry = {
+      date: new Date().toLocaleDateString('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
+      subject: selectedSubject,
+      agentType: selectedAgent,
+      input: voiceText || "Hình ảnh",
+      image: image || undefined,
+      resultContent: resultContentToSave,
+      studentInfo: studentInfoStr,
+      professor3Quizzes: professor3QuizzesToSave,
+    };
+    const updatedDiary = [newEntry, ...diaryEntries];
+    setDiaryEntries(updatedDiary);
+    localStorage.setItem('symbiotic_diary', JSON.stringify(updatedDiary));
+    setShowSaveSuccess(true);
+    setIsCurrentResultSaved(true);
+  }, [selectedSubject, allRawResults, selectedAgent, isCurrentResultSaved, professor1Result, professor3QuizResult, voiceText, image, diaryEntries, user]);
+
+  const handleQuizOptionSelect = useCallback((quizIndex: number, selectedOptionLetter: string, correctAnswer: string) => {
+    if (userSelectedAnswers[quizIndex] !== null) return;
+    const newSelectedAnswers = [...userSelectedAnswers];
+    newSelectedAnswers[quizIndex] = selectedOptionLetter;
+    setUserSelectedAnswers(newSelectedAnswers);
+    const newQuizFeedback = [...quizFeedback];
+    newQuizFeedback[quizIndex] = (selectedOptionLetter === correctAnswer) ? 'correct' : 'incorrect';
+    setQuizFeedback(newQuizFeedback);
+  }, [userSelectedAnswers, quizFeedback]);
+
+  // Màn hình Ghi danh ban đầu (Giao diện chuẩn)
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl shadow-xl max-w-md w-full p-8 border border-slate-100 animate-in fade-in duration-500">
+          <div className="text-center mb-6">
+            <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">SYMBIOTIC AI</h1>
+            <p className="text-xs font-bold text-indigo-600 tracking-wider uppercase mt-1">MULTI AGENT SYSTEMS</p>
+            <p className="text-xs text-slate-400 mt-2">Gia sư ảo thông minh - Gian hàng Chuyển đổi số</p>
           </div>
-        )}
-      </header>
-
-      {/* MÀN HÌNH ĐĂNG NHẬP (Hiển thị khi bấm ĐỔI TÀI KHOẢN) */}
-      {!isLoggedIn ? (
-        <main className="w-full max-w-sm my-auto bg-slate-50 border border-slate-200/80 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-sm font-extrabold text-slate-800 text-center mb-1">ĐĂNG NHẬP HỌC SINH</h2>
-          <p className="text-[11px] text-slate-500 text-center mb-5">Nhập thông tin để bắt đầu học tập cùng AI</p>
-
-          <form onSubmit={handleLoginSubmit} className="space-y-4">
+          <form onSubmit={handleRegister} className="space-y-4">
             <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">Họ và tên học sinh:</label>
+              <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1">Họ và tên học sinh</label>
               <input
                 type="text"
-                value={inputName}
-                onChange={(e) => setInputName(e.target.value)}
-                placeholder="VD: CHUNG"
-                className="w-full p-2.5 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
+                placeholder="Ví dụ: Nguyễn Văn A"
+                className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                value={form.fullName}
+                onChange={e => setForm({ ...form, fullName: e.target.value })}
+                required
               />
             </div>
-
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1">Lớp</label>
+                <input
+                  type="text"
+                  placeholder="Ví dụ: 12A1"
+                  className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                  value={form.className}
+                  onChange={e => setForm({ ...form, className: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1">Tỉnh / Thành phố</label>
+                <input
+                  type="text"
+                  placeholder="Ví dụ: Sơn La"
+                  className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                  value={form.province}
+                  onChange={e => setForm({ ...form, province: e.target.value })}
+                  required
+                />
+              </div>
+            </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">Lớp:</label>
+              <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1">Trường THPT</label>
               <input
                 type="text"
-                value={inputClass}
-                onChange={(e) => setInputClass(e.target.value)}
-                placeholder="VD: 12A"
-                className="w-full p-2.5 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
+                placeholder="Ví dụ: THPT Mai Sơn"
+                className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                value={form.school}
+                onChange={e => setForm({ ...form, school: e.target.value })}
+                required
               />
             </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">Trường:</label>
-              <input
-                type="text"
-                value={student.school}
-                disabled
-                className="w-full p-2.5 text-xs bg-slate-100 border border-slate-200 rounded-xl text-slate-500 font-semibold"
-              />
-            </div>
-
             <button
               type="submit"
-              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold tracking-wide shadow-md transition-transform active:scale-95 mt-2"
+              disabled={isRegistering}
+              className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-lg shadow-indigo-200 active:scale-95"
             >
-              XÁC NHẬN ĐĂNG NHẬP
+              {isRegistering ? 'Đang kết nối hệ thống...' : '🚀 BẮT ĐẦU TRẢI NGHIỆM'}
             </button>
           </form>
-        </main>
-      ) : (
-        <>
-          {/* THANH THÔNG TIN HỌC SINH */}
-          <div className="w-full max-w-sm bg-slate-50/80 border border-slate-100 rounded-full px-4 py-2 flex items-center justify-between text-[11px] mb-4 shadow-sm">
-            <div className="flex items-center space-x-2">
-              <span className="font-bold text-slate-800">{student.name} ({student.className})</span>
-              <span className="text-slate-300">|</span>
-              <span className="text-slate-500">{student.school}</span>
-            </div>
-            <button onClick={handleLogout} className="text-indigo-600 font-bold hover:underline">
-              ĐỔI TÀI KHOẢN
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Layout 
+      onBack={() => {
+        if (screen === 'ANALYSIS') {
+          setScreen('INPUT');
+          setProfessor1Result(null); 
+          setProfessor3QuizResult(null);
+          setAgentProcessingStates({});
+          setUserSelectedAnswers([]); 
+          setQuizFeedback([]);        
+        }
+        else if (screen === 'INPUT' || screen === 'DIARY') setScreen('HOME');
+      }}
+      title={screen !== 'HOME' ? (selectedSubject || (screen === 'DIARY' ? 'Nhật ký học tập' : '')) : undefined}
+    >
+      {/* Thanh thông tin người dùng */}
+      <div className="flex justify-between items-center mb-4 bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-200/80 text-xs font-medium text-slate-600 shadow-sm">
+        <div className="flex items-center space-x-2 truncate">
+          <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></span>
+          <span className="font-bold text-slate-800">{user.fullName} ({user.className})</span>
+          <span className="text-slate-300">|</span>
+          <span className="truncate">{user.school} - {user.province}</span>
+        </div>
+        <button onClick={handleLogout} className="text-indigo-600 hover:underline font-bold text-[10px] uppercase tracking-wider ml-2 whitespace-nowrap">
+          Đổi tài khoản
+        </button>
+      </div>
+
+      {/* Màn hình HOME - Chọn 4 Module */}
+      {screen === 'HOME' && (
+        <div className="grid grid-cols-2 gap-4 mt-2 animate-in fade-in duration-500">
+          {[
+            { name: Subject.MATH, color: 'bg-indigo-600', icon: '📐' },
+            { name: Subject.PHYSICS, color: 'bg-violet-600', icon: '⚛️' },
+            { name: Subject.CHEMISTRY, color: 'bg-emerald-600', icon: '🧪' },
+            { name: Subject.DIARY, color: 'bg-amber-600', icon: '📔' },
+          ].map((sub) => (
+            <button key={sub.name} onClick={() => handleSubjectSelect(sub.name as Subject)} className={`${sub.color} aspect-square rounded-[2rem] flex flex-col items-center justify-center text-white shadow-xl active:scale-95 transition-all`}>
+              <span className="text-lg font-black mb-2 uppercase tracking-tight">{sub.name}</span>
+              <span className="text-5xl">{sub.icon}</span>
             </button>
-          </div>
-
-          {/* NỘI DUNG CHÍNH (3 BƯỚC) */}
-          <main className="w-full max-w-sm flex-1 flex flex-col justify-center">
-            
-            {/* ==========================================
-                BƯỚC 1: MENU 4 MÔN HỌC (HÌNH 1)
-               ========================================== */}
-            {!selectedSubject && (
-              <div className="grid grid-cols-2 gap-4 my-auto">
-                <button
-                  onClick={() => setSelectedSubject('TOÁN HỌC')}
-                  className="h-44 bg-indigo-600 hover:bg-indigo-700 text-white rounded-3xl flex flex-col items-center justify-center space-y-3 shadow-md transition-transform active:scale-95"
-                >
-                  <span className="font-extrabold text-base tracking-wide">TOÁN HỌC</span>
-                  <span className="text-4xl">📐</span>
-                </button>
-
-                <button
-                  onClick={() => setSelectedSubject('VẬT LÍ')}
-                  className="h-44 bg-purple-600 hover:bg-purple-700 text-white rounded-3xl flex flex-col items-center justify-center space-y-3 shadow-md transition-transform active:scale-95"
-                >
-                  <span className="font-extrabold text-base tracking-wide">VẬT LÍ</span>
-                  <span className="text-4xl">⚛️</span>
-                </button>
-
-                <button
-                  onClick={() => setSelectedSubject('HÓA HỌC')}
-                  className="h-44 bg-emerald-600 hover:bg-emerald-700 text-white rounded-3xl flex flex-col items-center justify-center space-y-3 shadow-md transition-transform active:scale-95"
-                >
-                  <span className="font-extrabold text-base tracking-wide">HÓA HỌC</span>
-                  <span className="text-4xl">🧪</span>
-                </button>
-
-                <button
-                  onClick={() => setSelectedSubject('NHẬT KÝ')}
-                  className="h-44 bg-amber-600 hover:bg-amber-700 text-white rounded-3xl flex flex-col items-center justify-center space-y-3 shadow-md transition-transform active:scale-95"
-                >
-                  <span className="font-extrabold text-base tracking-wide">NHẬT KÝ</span>
-                  <span className="text-4xl">📓</span>
-                </button>
-              </div>
-            )}
-
-            {/* ==========================================
-                BƯỚC 2: CHỤP/TẢI ĐỀ BÀI (HÌNH 2)
-               ========================================== */}
-            {selectedSubject && !isProcessing && (
-              <div className="flex flex-col flex-1 justify-between py-2">
-                
-                <div className="bg-indigo-50/40 border border-indigo-100 rounded-3xl p-6 min-h-[300px] flex flex-col items-center justify-center text-center shadow-inner">
-                  {imagePreview ? (
-                    <div className="relative w-full h-56">
-                      <img src={imagePreview} alt="Preview" className="w-full h-full object-contain rounded-2xl" />
-                      <button
-                        onClick={() => setImagePreview(null)}
-                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs shadow-md"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-4 w-full">
-                      <p className="text-xs font-semibold text-indigo-900/60">
-                        Vui lòng chụp ảnh hoặc ghi âm đề bài...
-                      </p>
-                      <textarea
-                        value={inputText}
-                        onChange={(e) => setInputText(e.target.value)}
-                        placeholder="Hoặc gõ trực tiếp câu hỏi tại đây..."
-                        className="w-full p-3 text-xs bg-white/80 border border-indigo-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                        rows={3}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <input
-                  type="file"
-                  accept="image/*"
-                  ref={fileInputRef}
-                  onChange={handleImageUpload}
-                  className="hidden"
-                />
-
-                <div className="grid grid-cols-4 gap-2 text-center my-6">
-                  <button
-                    onClick={() => {
-                      if (fileInputRef.current) {
-                        fileInputRef.current.capture = 'environment';
-                        fileInputRef.current.click();
-                      }
-                    }}
-                    className="flex flex-col items-center space-y-1 group"
-                  >
-                    <div className="w-14 h-14 bg-blue-600 group-active:scale-90 transition-transform rounded-2xl flex items-center justify-center text-white text-xl shadow-md">
-                      📷
-                    </div>
-                    <span className="text-[10px] font-bold tracking-wider text-slate-500">CAMERA</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      if (fileInputRef.current) {
-                        fileInputRef.current.removeAttribute('capture');
-                        fileInputRef.current.click();
-                      }
-                    }}
-                    className="flex flex-col items-center space-y-1 group"
-                  >
-                    <div className="w-14 h-14 bg-blue-600 group-active:scale-90 transition-transform rounded-2xl flex items-center justify-center text-white text-xl shadow-md">
-                      🖼️
-                    </div>
-                    <span className="text-[10px] font-bold tracking-wider text-slate-500">THƯ VIỆN</span>
-                  </button>
-
-                  <button
-                    onClick={() => alert('Tính năng thu âm đang được kết nối...')}
-                    className="flex flex-col items-center space-y-1 group"
-                  >
-                    <div className="w-14 h-14 bg-blue-600 group-active:scale-90 transition-transform rounded-2xl flex items-center justify-center text-white text-xl shadow-md">
-                      🎙️
-                    </div>
-                    <span className="text-[10px] font-bold tracking-wider text-slate-500">GHI ÂM</span>
-                  </button>
-
-                  <button
-                    onClick={handleStartProcess}
-                    className="flex flex-col items-center space-y-1 group"
-                  >
-                    <div className="w-14 h-14 bg-indigo-200 group-active:scale-90 transition-transform rounded-2xl flex items-center justify-center text-indigo-600 text-xl shadow-md">
-                      🚀
-                    </div>
-                    <span className="text-[10px] font-bold tracking-wider text-indigo-600">THỰC HIỆN</span>
-                  </button>
-                </div>
-
-                <button onClick={handleResetSubject} className="text-xs text-slate-400 font-semibold text-center hover:underline">
-                  ← Quay lại chọn môn
-                </button>
-              </div>
-            )}
-
-            {/* ==========================================
-                BƯỚC 3: THIẾT LẬP AGENTS & KẾT QUẢ (HÌNH 3)
-               ========================================== */}
-            {selectedSubject && isProcessing && (
-              <div className="flex flex-col flex-1 justify-between py-2">
-                
-                <div className="bg-blue-600 p-1 rounded-2xl flex justify-between items-center text-white shadow-md text-[10px] font-bold mb-4">
-                  {(['ĐIỀU PHỐI MAS', 'GIẢI NHANH 1S', 'GIA SƯ AI', 'LUYỆN SKILL'] as AgentType[]).map((agent) => (
-                    <button
-                      key={agent}
-                      onClick={() => handleAgentChange(agent)}
-                      className={`px-2 py-2 rounded-xl transition-all flex items-center space-x-1 ${
-                        activeAgent === agent
-                          ? 'bg-white text-blue-600 shadow-sm'
-                          : 'text-blue-100 hover:bg-blue-500'
-                      }`}
-                    >
-                      {agent === 'GIẢI NHANH 1S' && <span>⚡</span>}
-                      {agent === 'GIA SƯ AI' && <span>⭕</span>}
-                      {agent === 'LUYỆN SKILL' && <span>🔍</span>}
-                      <span>{agent}</span>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="bg-slate-50/50 border border-slate-200 rounded-3xl p-6 min-h-[320px] flex flex-col items-center justify-center text-center shadow-inner relative">
-                  {loading ? (
-                    <div className="flex flex-col items-center justify-center space-y-4">
-                      <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                      <p className="text-xs font-bold text-blue-600 tracking-wide uppercase">
-                        ĐANG TẢI DỮ LIỆU TỪ CHUYÊN GIA {activeAgent}...
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="w-full text-left text-xs leading-relaxed text-slate-700 whitespace-pre-wrap max-h-[350px] overflow-y-auto p-1">
-                      {responseOutput || 'Chưa nhận được phản hồi. Vui lòng bấm chọn Tác tử để thực thi lại.'}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between mt-4">
-                  <button
-                    onClick={() => setIsProcessing(false)}
-                    className="text-xs text-indigo-600 font-bold hover:underline"
-                  >
-                    ← Tải/Chụp ảnh khác
-                  </button>
-                  <button
-                    onClick={handleResetSubject}
-                    className="text-xs text-slate-400 font-semibold hover:underline"
-                  >
-                    Quay lại Trang chủ
-                  </button>
-                </div>
-
-              </div>
-            )}
-
-          </main>
-        </>
+          ))}
+        </div>
       )}
 
-      {/* FOOTER BẢN QUYỀN */}
-      <footer className="text-center my-3 w-full">
-        <p className="text-[10px] font-extrabold text-slate-700 tracking-wider">
-          SYMBIOTIC AI — GIẢI PHÁP CHUYỂN ĐỔI SỐ GIÁO DỤC
-        </p>
-        <p className="text-[10px] font-bold text-indigo-500 mt-0.5">TRƯỜNG THPT MAI SƠN</p>
-      </footer>
+      {/* Màn hình INPUT - Nhập / Chụp đề bài */}
+      {screen === 'INPUT' && (
+        <div className="space-y-10 animate-in fade-in duration-500">
+          <div className="w-full aspect-[16/10] bg-blue-50/70 rounded-[2.5rem] flex items-center justify-center overflow-hidden border-2 border-blue-100 relative shadow-inner">
+            {showCamera ? (
+              <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+            ) : capturedImagePreview ? (
+              <img src={capturedImagePreview} className="p-4 h-full object-contain" alt="Ảnh đã chụp" />
+            ) : image ? (
+              <img src={image} className="p-4 h-full object-contain" alt="Ảnh đề bài" />
+            ) : (
+              <div className="p-10 text-center text-blue-900 font-bold text-sm leading-relaxed">{voiceText || "Vui lòng chụp ảnh hoặc ghi âm đề bài..."}</div>
+            )}
+            {isCounting && <div className="absolute inset-0 flex items-center justify-center text-7xl font-black text-white drop-shadow-lg">{countdown}</div>}
+          </div>
+          
+          <div className="flex justify-between items-end px-4">
+            {isImageCaptured ? (
+              <>
+                <div className="flex flex-col items-center group">
+                  <button onClick={handleRetakePhoto} className="w-16 h-16 rounded-3xl bg-red-500 text-white shadow-lg active:scale-90 flex items-center justify-center hover:bg-red-600 transition-colors" aria-label="Chụp lại">
+                    <span className="text-2xl">🔄</span>
+                  </button>
+                  <span className="text-[10px] font-black uppercase mt-3 text-red-500 opacity-60 group-hover:opacity-100">Chụp lại</span>
+                </div>
+                <div className="flex flex-col items-center group">
+                  <button onClick={handleSaveCapturedPhoto} className="w-16 h-16 rounded-3xl bg-emerald-500 text-white shadow-lg active:scale-90 flex items-center justify-center hover:bg-emerald-600 transition-colors" aria-label="Lưu ảnh">
+                    <span className="text-2xl">✅</span>
+                  </button>
+                  <span className="text-[10px] font-black uppercase mt-3 text-emerald-500 opacity-60 group-hover:opacity-100">Lưu</span>
+                </div>
+              </>
+            ) : (
+              <>
+                {[{ l: 'Camera', i: '📸', a: startCamera }, { l: 'Thư viện', i: '🖼️', a: () => fileInputRef.current?.click() }, { l: isRecording ? 'Dừng' : 'Ghi âm', i: isRecording ? '⏹️' : '🎙️', a: () => toggleRecording() }].map((it) => (
+                  <div key={it.l} className="flex flex-col items-center group">
+                    <button onClick={it.a} className="w-16 h-16 rounded-3xl bg-blue-600 text-white shadow-lg active:scale-90 flex items-center justify-center hover:bg-blue-700 transition-colors" aria-label={it.l}>
+                      <span className="text-2xl">{it.i}</span>
+                    </button>
+                    <span className="text-[10px] font-black uppercase mt-3 text-blue-600 opacity-60 group-hover:opacity-100">{it.l}</span>
+                  </div>
+                ))}
+                <div className="flex flex-col items-center group">
+                  <button onClick={runAnalysis} disabled={(!image && !voiceText) || isImageCaptured} className="w-16 h-16 rounded-3xl bg-blue-600 text-white shadow-lg active:scale-90 flex items-center justify-center hover:bg-blue-700 transition-colors disabled:opacity-30 disabled:pointer-events-none" aria-label="Thực hiện">
+                    <span className="text-2xl">🚀</span>
+                  </button>
+                  <span className="text-[10px] font-black uppercase mt-3 text-blue-600 opacity-60 group-hover:opacity-100">Thực hiện</span>
+                </div>
+              </>
+            )}
+          </div>
+          <canvas ref={canvasRef} className="hidden" />
+          <input type="file" ref={fileInputRef} onChange={(e) => {
+            const f = e.target.files?.[0]; if (f) { const r = new FileReader(); r.onload = (e) => {
+              const rawBase64 = e.target?.result as string;
+              compressImage(rawBase64).then((compressed) => {
+                setImage(compressed);
+                setVoiceText('');
+                setIsCurrentResultSaved(false);
+                setCapturedImagePreview(null);
+                setIsImageCaptured(false);
+              });
+            }; r.readAsDataURL(f); }
+          }} className="hidden" accept="image/*" />
+        </div>
+      )}
 
-    </div>
+      {/* Màn hình ANALYSIS - Phân tích & Tương tác bài tập */}
+      {screen === 'ANALYSIS' && (
+        <div className="space-y-6 animate-in fade-in duration-500">
+          <div className="flex items-center justify-center bg-blue-600 p-2 rounded-2xl shadow-lg text-white">
+            <div className="flex flex-grow-0 flex-shrink-0 gap-0.5 justify-center">
+              {agents.map((ag) => (
+                <button 
+                  key={ag} 
+                  onClick={() => { setSelectedAgent(ag); setProfessor3ShownSolutionIndex(null); }} 
+                  className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl text-[8px] font-black uppercase transition-all whitespace-nowrap 
+                    ${selectedAgent === ag ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-100 hover:bg-blue-500'}
+                  `}
+                >
+                  <AgentLogo type={ag} active={selectedAgent === ag} />
+                  <span>{ag}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="bg-white rounded-[2rem] p-6 border border-slate-100 shadow-sm relative min-h-[500px]">
+            {agentProcessingStates[selectedAgent] === 'loading' ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center space-y-4">
+                <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                <p className="text-[10px] font-black uppercase text-blue-500 tracking-widest">
+                  Đang tải dữ liệu từ chuyên gia {selectedAgent}...
+                </p>
+              </div>
+            ) : agentProcessingStates[selectedAgent] === 'error' ? (
+              <p className="text-red-500 italic text-center p-8">
+                {allRawResults[selectedAgent] || `Không thể tải kết quả từ chuyên gia ${selectedAgent}.`}
+              </p>
+            ) : (
+              <div className="space-y-8">
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center relative">
+                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">{selectedAgent} - KẾT QUẢ</span>
+                    <div className="flex items-center gap-2">
+                      {showSaveSuccess && (
+                          <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full animate-in fade-in">
+                              Đã lưu vào Nhật ký!
+                          </span>
+                      )}
+                      <button 
+                          onClick={handleSaveToDiary}
+                          disabled={!allRawResults[selectedAgent] || isCurrentResultSaved}
+                          className="flex items-center gap-1.5 p-2 bg-blue-50 text-blue-600 rounded-full disabled:opacity-20 transition-all active:scale-90"
+                          aria-label={isCurrentResultSaved ? "Đã lưu vào Nhật ký" : "Lưu vào Nhật ký"}
+                      >
+                          {isCurrentResultSaved ? (
+                              <>
+                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                                  <span className="text-xs font-bold">Đã lưu</span>
+                              </>
+                          ) : (
+                              <>
+                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                                  <span className="text-xs font-bold">Lưu nhật ký</span>
+                              </>
+                          )}
+                      </button>
+                      <button 
+                          onClick={async () => {
+                              if (allAudios[selectedAgent]) {
+                                  setIsSpeaking(true);
+                                  await playStoredAudio(allAudios[selectedAgent]!, audioSourceRef);
+                                  setIsSpeaking(false);
+                              }
+                          }} 
+                          disabled={!allAudios[selectedAgent] || isSpeaking} 
+                          className="p-2 bg-blue-50 text-blue-600 rounded-full disabled:opacity-20 transition-all active:scale-90"
+                          aria-label="Đọc kết quả"
+                      >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="prose prose-slate max-w-none text-sm math-font">
+                    {selectedAgent === AgentType.GIAI_NHANH_1S && professor1Result ? (
+                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {professor1Result.finalAnswer}
+                      </ReactMarkdown>
+                    ) : selectedAgent === AgentType.LUYEN_SKILL && professor3QuizResult && professor3QuizResult.quizzes.length > 0 ? (
+                      professor3QuizResult.quizzes.map((q: QuizQuestion, qIndex: number) => (
+                        <div key={qIndex} className="bg-amber-50/50 p-4 mt-4 rounded-2xl border-l-4 border-amber-500 shadow-sm">
+                            <h4 className="text-xs font-black uppercase text-amber-600 mb-1 flex items-center gap-2">
+                                Bài tập tương tự {qIndex + 1}
+                                {quizFeedback[qIndex] === 'correct' && <span className="text-emerald-500">✅</span>}
+                                {quizFeedback[qIndex] === 'incorrect' && <span className="text-red-500">❌</span>}
+                            </h4>
+                            <div className="font-bold text-slate-800 mb-2">
+                              <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                {q.question}
+                              </ReactMarkdown>
+                            </div>
+                            <div className="grid gap-2">
+                            {q.options.map((o: string, oIndex: number) => {
+                                const optionLetter = String.fromCharCode(65 + oIndex);
+                                const isSelected = userSelectedAnswers[qIndex] === optionLetter;
+                                const isCorrectAnswer = q.answer === optionLetter;
+                                
+                                let optionClasses = `w-full text-left px-4 py-3 rounded-xl border text-xs font-bold transition-all `;
+                                if (userSelectedAnswers[qIndex] !== null) {
+                                    optionClasses += `cursor-not-allowed `;
+                                    if (isSelected && !isCorrectAnswer) {
+                                        optionClasses += `bg-red-100 border-red-500 text-red-700 `;
+                                    } else if (isCorrectAnswer) {
+                                        optionClasses += `bg-emerald-100 border-emerald-500 text-emerald-700 `;
+                                    } else {
+                                        optionClasses += `bg-slate-50 border-slate-200 text-slate-500 `;
+                                    }
+                                } else {
+                                    optionClasses += `bg-white border-slate-200 text-slate-800 hover:bg-blue-50 hover:border-blue-300 cursor-pointer `;
+                                }
+                                return (
+                                <button 
+                                  key={oIndex} 
+                                  onClick={() => handleQuizOptionSelect(qIndex, optionLetter, q.answer)}
+                                  disabled={userSelectedAnswers[qIndex] !== null}
+                                  className={optionClasses}
+                                >
+                                    <span className="opacity-70 mr-2 font-black">{optionLetter}.</span> 
+                                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                      {o}
+                                    </ReactMarkdown>
+                                </button>
+                                );
+                            })}
+                            </div>
+                            <div className="mt-4 flex flex-col gap-2">
+                              <button 
+                                onClick={() => setProfessor3ShownSolutionIndex(professor3ShownSolutionIndex === qIndex ? null : qIndex)}
+                                className="px-4 py-2 bg-blue-100 text-blue-700 rounded-xl text-xs font-bold transition-colors hover:bg-blue-200 active:scale-95"
+                              >
+                                {professor3ShownSolutionIndex === qIndex ? 'Ẩn lời giải' : 'Hiện lời giải'}
+                              </button>
+                              {professor3ShownSolutionIndex === qIndex && (
+                                <div className="bg-blue-50/50 p-3 rounded-xl border-l-4 border-blue-500">
+                                  <h5 className="text-[9px] font-black uppercase text-blue-600 mb-1">Đáp án: {q.answer}</h5>
+                                  <div className="prose prose-slate max-w-none text-xs math-font">
+                                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                      {q.solution}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                        </div>
+                      ))
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {allRawResults[selectedAgent] || ''}
+                      </ReactMarkdown>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Màn hình DIARY - Nhật ký Học tập */}
+      {screen === 'DIARY' && (
+        <div className="space-y-4 animate-in fade-in duration-500">
+          {diaryEntries.length === 0 ? (
+            <div className="text-center py-12 text-slate-400 font-medium text-sm">
+              Chưa có nhật ký nào được lưu tại thiết bị này.
+            </div>
+          ) : (
+            diaryEntries.map((item, idx) => (
+              <div key={idx} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-3">
+                <div className="flex justify-between items-center text-[10px] font-black uppercase text-slate-400">
+                  <span className="text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md">{item.subject} - {item.agentType}</span>
+                  <span>{item.date}</span>
+                </div>
+                
+                {item.studentInfo && (
+                  <div className="text-xs font-bold text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    👤 Học sinh: {item.studentInfo}
+                  </div>
+                )}
+                {item.image && (
+                  <img src={item.image} className="max-h-40 rounded-xl border object-contain" alt="Đề bài" />
+                )}
+                
+                <p className="text-xs font-medium text-slate-500">
+                  <strong className="text-slate-700">Đề bài:</strong> {item.input}
+                </p>
+                <div className="bg-slate-50 p-3 rounded-xl text-xs math-font prose max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                    {item.resultContent}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </Layout>
   );
-}
+};
+
+export default App;
