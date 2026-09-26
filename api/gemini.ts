@@ -22,17 +22,25 @@ const TEXT_MODEL = 'gemini-2.5-flash';
 const getAllAPIKeys = (): string[] => {
   const rawKeys: string[] = [];
 
-  // Lấy từ 4 biến riêng biệt cho QUAD-CORE MAS
-  if (process.env.GEMINI_API_KEY_1) rawKeys.push(process.env.GEMINI_API_KEY_1);
-  if (process.env.GEMINI_API_KEY_2) rawKeys.push(process.env.GEMINI_API_KEY_2);
-  if (process.env.GEMINI_API_KEY_3) rawKeys.push(process.env.GEMINI_API_KEY_3);
-  if (process.env.GEMINI_API_KEY_4) rawKeys.push(process.env.GEMINI_API_KEY_4);
+  // Vite truy xuất biến qua import.meta.env
+  const env = import.meta.env;
 
-  // Lấy từ biến gộp GEMINI_API_KEY (nếu dán dạng key1,key2,key3,key4)
-  const envKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY;
-  if (envKey) {
-    rawKeys.push(...envKey.split(','));
+  if (env.VITE_GEMINI_API_KEY_1) rawKeys.push(env.VITE_GEMINI_API_KEY_1);
+  if (env.VITE_GEMINI_API_KEY_2) rawKeys.push(env.VITE_GEMINI_API_KEY_2);
+  if (env.VITE_GEMINI_API_KEY_3) rawKeys.push(env.VITE_GEMINI_API_KEY_3);
+  if (env.VITE_GEMINI_API_KEY_4) rawKeys.push(env.VITE_GEMINI_API_KEY_4);
+
+  // Fallback nếu khai báo dạng chuỗi gộp
+  const comboKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY;
+  if (comboKey) {
+    rawKeys.push(...comboKey.split(','));
   }
+
+  return rawKeys
+    .map(k => k.trim())
+    .filter((k, index, self) => k.length > 0 && self.indexOf(k) === index);
+};
+
 
   // Tách chuỗi, xóa khoảng trắng và loại bỏ các Key trùng lặp
   const cleanKeys = rawKeys
