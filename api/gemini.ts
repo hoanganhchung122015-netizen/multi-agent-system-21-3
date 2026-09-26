@@ -17,35 +17,28 @@ export interface VercelResponse {
 const TEXT_MODEL = 'gemini-2.5-flash';
 
 /**
- * Lấy danh sách toàn bộ API Key từ các biến môi trường của Vercel
+ * Lấy danh sách toàn bộ API Key từ các biến môi trường của Vercel (Hỗ trợ Vite)
  */
 const getAllAPIKeys = (): string[] => {
   const rawKeys: string[] = [];
-
-  // Vite truy xuất biến qua import.meta.env
   const env = import.meta.env;
 
+  // 1. Lấy từ các biến lẻ VITE_GEMINI_API_KEY_1 đến VITE_GEMINI_API_KEY_4
   if (env.VITE_GEMINI_API_KEY_1) rawKeys.push(env.VITE_GEMINI_API_KEY_1);
   if (env.VITE_GEMINI_API_KEY_2) rawKeys.push(env.VITE_GEMINI_API_KEY_2);
   if (env.VITE_GEMINI_API_KEY_3) rawKeys.push(env.VITE_GEMINI_API_KEY_3);
   if (env.VITE_GEMINI_API_KEY_4) rawKeys.push(env.VITE_GEMINI_API_KEY_4);
 
-  // Fallback nếu khai báo dạng chuỗi gộp
+  // 2. Fallback nếu khai báo dạng chuỗi gộp phân tách bằng dấu phẩy
   const comboKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY;
   if (comboKey) {
     rawKeys.push(...comboKey.split(','));
   }
 
-  return rawKeys
-    .map(k => k.trim())
-    .filter((k, index, self) => k.length > 0 && self.indexOf(k) === index);
-};
-
-
-  // Tách chuỗi, xóa khoảng trắng và loại bỏ các Key trùng lặp
+  // 3. Làm sạch dữ liệu: Xóa khoảng trắng, lọc đúng định dạng Gemini Key ("AIzaSy...") và loại bỏ trùng lặp
   const cleanKeys = rawKeys
-    .map(k => k ? k.trim() : '')
-    .filter(k => k.length > 0 && k.startsWith("AIzaSy"));
+    .map(k => (k ? k.trim() : ''))
+    .filter(k => k.length > 0 && k.startsWith('AIzaSy'));
 
   return Array.from(new Set(cleanKeys));
 };
@@ -56,7 +49,6 @@ const getAllAPIKeys = (): string[] => {
 const getOrderedKeysForAgent = (agent?: string): string[] => {
   const allKeys = getAllAPIKeys();
   if (allKeys.length === 0) return [];
-
   // Xác định Key ưu tiên hàng đầu dựa trên Tác tử
   let primaryKeyIndex = 0;
   if (agent === 'Điều phối MAS' || agent === 'ORCHESTRATOR') {
