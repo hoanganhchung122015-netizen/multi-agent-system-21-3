@@ -8,7 +8,7 @@ export enum Subject {
   MATH = 'TOÁN HỌC',
   PHYSICS = 'VẬT LÍ',
   CHEMISTRY = 'HÓA HỌC',
-  DIARY = 'NHẬT KÝ HỌC TẬP'
+  BIOLOGY = 'SINH HỌC'
 }
 
 export enum AgentType {
@@ -54,11 +54,9 @@ interface DiaryEntry {
 
 const GOOGLE_SHEET_WEB_APP_URL = "https://script.google.com/macros/s/AKfycby5E5_L510S92C3V4J46V3D17V-u5g_H9c2M8Vp8B1x_1X8f4y_1x2y3z4/exec";
 
-// --- CONTROLLER LAYER: Custom Hook to manage Agent Logic ---
+// --- CONTROLLER LAYER: Custom Hook (v16.5) ---
 const useAgentSystem = (selectedSubject: Subject | null) => {
   const [allRawResults, setAllRawResults] = useState<Partial<Record<AgentType, string>>>({});
-  const [allAudios, setAllAudios] = useState<Partial<Record<AgentType, string>>>({});
-  
   const [professor1Result, setProfessor1Result] = useState<Professor1Result | null>(null);
   const [professor3QuizResult, setProfessor3QuizResult] = useState<Professor3QuizResult | null>(null);
   
@@ -67,7 +65,6 @@ const useAgentSystem = (selectedSubject: Subject | null) => {
 
   const resetResults = useCallback(() => {
     setAllRawResults({});
-    setAllAudios({});
     setProfessor1Result(null);
     setProfessor3QuizResult(null);
     setLoading(false);
@@ -83,17 +80,15 @@ const useAgentSystem = (selectedSubject: Subject | null) => {
     if (!selectedSubject || (!image && !voiceText)) return;
 
     setLoading(true);
-    setLoadingStatus(`Đang kết nối Hệ thống Tác tử AI...`);
+    setLoadingStatus(`Đang kết nối Hệ thống Tác tử AI (${selectedSubject})...`);
 
-    // Hàm gọi API giả lập/thực tế tới các Tác tử
     const processAgent = async (agent: AgentType) => {
       try {
         let resText = "";
         
         if (agent === AgentType.SPEED) {
-          // Tác tử 1: Giải nhanh + Hướng dẫn Casio (JSON format)
           const mockProf1: Professor1Result = {
-            finalAnswer: "Đáp án đúng là **C. 5 cm**.\n\nBiểu thức li độ $x = 5\\cos(10\\pi t + \\pi/3)$ (cm) có biên độ $A = 5\\text{ cm}$.",
+            finalAnswer: `### Lời giải nhanh (${selectedSubject}):\nĐáp án đúng là **C. 5 cm**.\n\nBiểu thức li độ $x = 5\\cos(10\\pi t + \\pi/3)$ (cm) có biên độ $A = 5\\text{ cm}$.`,
             casioSteps: "Bấm [MODE] -> [1] (Tính toán chuẩn)\nNhập hàm li độ để tính giá trị cực đại hoặc bấm SHIFT 7."
           };
           resText = JSON.stringify(mockProf1);
@@ -101,12 +96,10 @@ const useAgentSystem = (selectedSubject: Subject | null) => {
           setAllRawResults(prev => ({ ...prev, [agent]: mockProf1.finalAnswer }));
         } 
         else if (agent === AgentType.SOCRATIC) {
-          // Tác tử 2: Gia sư AI hướng dẫn tư duy Socratic
-          resText = "### Phân tích tư duy Socratic:\n1. **Nhận biết dạng bài**: Phương trình dao động điều hòa dạng tổng quát $x = A\\cos(\\omega t + \\varphi)$.\n2. **Xác định các đại lượng**:\n   - Biên độ dao động: $A = 5\\text{ cm}$.\n   - Tần số góc: $\\omega = 10\\pi\\text{ rad/s}$.\n   - Pha ban đầu: $\\varphi = \\pi/3\\text{ rad}$.\n3. **Kết luận**: Chọn phương án có biên độ bằng 5 cm.";
+          resText = `### Phân tích tư duy Socratic (${selectedSubject}):\n1. **Nhận biết dạng bài**: Phương trình tổng quát $x = A\\cos(\\omega t + \\varphi)$.\n2. **Xác định các đại lượng**:\n   - Biên độ dao động: $A = 5\\text{ cm}$.\n   - Tần số góc: $\\omega = 10\\pi\\text{ rad/s}$.\n   - Pha ban đầu: $\\varphi = \\pi/3\\text{ rad}$.\n3. **Kết luận**: Chọn phương án có biên độ bằng 5 cm.`;
           setAllRawResults(prev => ({ ...prev, [agent]: resText }));
         } 
         else if (agent === AgentType.SKILL) {
-          // Tác tử 3: Luyện Skill - Sinh bài tập trắc nghiệm tương tự
           const mockProf3: Professor3QuizResult = {
             quizzes: [
               {
@@ -133,7 +126,6 @@ const useAgentSystem = (selectedSubject: Subject | null) => {
       }
     };
 
-    // Chạy song song tất cả tác tử bằng Promise.allSettled
     await Promise.allSettled(allAgents.map(a => processAgent(a)));
     setLoading(false);
 
@@ -141,7 +133,6 @@ const useAgentSystem = (selectedSubject: Subject | null) => {
 
   return {
     allRawResults,
-    allAudios,
     professor1Result,
     professor3QuizResult,
     loading,
@@ -172,7 +163,7 @@ const App: React.FC = () => {
   const [form, setForm] = useState<UserProfile>({ fullName: '', className: '', school: '', province: '' });
   const [isSubmittingForm, setIsSubmittingForm] = useState(false);
 
-  // 2. App Navigation & Data State
+  // 2. Navigation & Data State (Chuẩn v16.5)
   const [screen, setScreen] = useState<'HOME' | 'INPUT' | 'ANALYSIS' | 'DIARY'>('HOME');
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<AgentType>(AgentType.SPEED);
@@ -210,7 +201,7 @@ const App: React.FC = () => {
     resetResults, runAgents 
   } = useAgentSystem(selectedSubject);
 
-  // Initial Load from LocalStorage
+  // Load User & Diary from LocalStorage
   useEffect(() => {
     const savedUser = localStorage.getItem('symbiotic_user');
     if (savedUser) setUser(JSON.parse(savedUser));
@@ -230,7 +221,6 @@ const App: React.FC = () => {
       localStorage.setItem('symbiotic_user', JSON.stringify(form));
       setUser(form);
 
-      // Sync to Google Sheet
       fetch(GOOGLE_SHEET_WEB_APP_URL, {
         method: 'POST',
         mode: 'no-cors',
@@ -257,15 +247,23 @@ const App: React.FC = () => {
     setIsCurrentResultSaved(false);
   }, [resetResults]);
 
+  // Điều hướng khi chọn Môn học
   const handleSubjectSelect = useCallback((sub: Subject) => {
     resetAppState();
-    if (sub === Subject.DIARY) {
-      setSelectedSubject(null);
-      setScreen('DIARY');
-    } else {
-      setSelectedSubject(sub);
-      setScreen('INPUT');
-    }
+    setSelectedSubject(sub);
+    setScreen('INPUT');
+  }, [resetAppState]);
+
+  // Điều hướng mở Nhật ký
+  const handleOpenDiary = useCallback(() => {
+    setScreen('DIARY');
+  }, []);
+
+  // Điều hướng quay lại Menu chính (HOME) chuẩn v16.5
+  const handleGoHome = useCallback(() => {
+    resetAppState();
+    setSelectedSubject(null);
+    setScreen('HOME');
   }, [resetAppState]);
 
   // Camera Handler
@@ -339,6 +337,7 @@ const App: React.FC = () => {
      runAgents(selectedAgent, agents, voiceText, image);
   }, [selectedSubject, image, voiceText, isImageCaptured, selectedAgent, agents, runAgents]);
 
+  // Lưu bài học vào Nhật ký
   const handleSaveToDiary = useCallback(() => {
     if (!selectedSubject || isCurrentResultSaved) return;
 
@@ -375,7 +374,7 @@ const App: React.FC = () => {
     rehypePlugins: [rehypeKatex]
   }), []);
 
-  // --- RENDER FORM GHI DANH NẾU CHƯA CÓ USER ---
+  // RENDER FORM GHI DANH
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
@@ -413,16 +412,15 @@ const App: React.FC = () => {
     );
   }
 
-  // --- MAIN APP RENDER ---
   return (
     <div className="min-h-screen bg-slate-100 flex justify-center">
       <div className="w-full max-w-md bg-white min-h-screen flex flex-col shadow-2xl relative">
         
-        {/* HEADER */}
+        {/* HEADER CHUẨN v16.5: LUÔN CÓ NÚT VỀ MENU HOẶC NÚT NHẬT KÝ */}
         <header className="p-4 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-20">
           {screen !== 'HOME' ? (
-            <button onClick={() => screen === 'ANALYSIS' ? setScreen('INPUT') : setScreen('HOME')} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 font-bold active:scale-90 transition-transform">
-              ←
+            <button onClick={handleGoHome} className="flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-slate-100 px-3 py-2 rounded-xl active:scale-90 transition-transform">
+              <span>← Menu chính</span>
             </button>
           ) : (
             <div className="flex items-center gap-2">
@@ -431,16 +429,23 @@ const App: React.FC = () => {
             </div>
           )}
           
-          <div className="text-right">
-            <div className="text-xs font-bold text-slate-800">{user.fullName}</div>
-            <div className="text-[10px] text-slate-400 font-medium">{user.className} - {user.school}</div>
+          <div className="flex items-center gap-3">
+            {screen === 'HOME' && (
+              <button onClick={handleOpenDiary} className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1 active:scale-90 transition-transform">
+                📓 Nhật ký
+              </button>
+            )}
+            <div className="text-right">
+              <div className="text-xs font-bold text-slate-800">{user.fullName}</div>
+              <div className="text-[10px] text-slate-400 font-medium">{user.className}</div>
+            </div>
           </div>
         </header>
 
-        {/* MAIN BODY */}
+        {/* MAIN CONTENT */}
         <main className="flex-1 p-4 overflow-y-auto">
           
-          {/* SCREEN: HOME */}
+          {/* SCREEN 1: HOME - ĐỦ 4 MÔN HỌC CHUẨN (TOÁN, LÝ, HÓA, SINH) */}
           {screen === 'HOME' && (
             <div className="space-y-4 animate-in fade-in duration-300">
               <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-3xl p-6 text-white shadow-xl">
@@ -454,7 +459,7 @@ const App: React.FC = () => {
                   { name: Subject.MATH, color: 'bg-indigo-600', icon: '📐' },
                   { name: Subject.PHYSICS, color: 'bg-violet-600', icon: '⚛️' },
                   { name: Subject.CHEMISTRY, color: 'bg-emerald-600', icon: '🧪' },
-                  { name: Subject.DIARY, color: 'bg-amber-600', icon: '📔' },
+                  { name: Subject.BIOLOGY, color: 'bg-teal-600', icon: '🧬' },
                 ].map((sub) => (
                   <button key={sub.name} onClick={() => handleSubjectSelect(sub.name as Subject)} className={`${sub.color} aspect-square rounded-[2rem] flex flex-col items-center justify-center text-white shadow-lg active:scale-95 transition-all p-4`}>
                     <span className="text-4xl mb-2">{sub.icon}</span>
@@ -465,9 +470,14 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* SCREEN: INPUT */}
+          {/* SCREEN 2: INPUT */}
           {screen === 'INPUT' && (
             <div className="space-y-6 animate-in fade-in duration-300">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-400">Môn đang chọn:</span>
+                <span className="text-xs font-black uppercase text-blue-600 bg-blue-50 px-3 py-1 rounded-full">{selectedSubject}</span>
+              </div>
+
               <div className="w-full aspect-[16/10] bg-slate-50 rounded-[2rem] flex items-center justify-center overflow-hidden border-2 border-slate-200 relative shadow-inner">
                 {showCamera ? (
                   <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
@@ -542,7 +552,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* SCREEN: ANALYSIS */}
+          {/* SCREEN 3: ANALYSIS */}
           {screen === 'ANALYSIS' && (
             <div className="space-y-4 animate-in fade-in duration-300">
               
@@ -659,10 +669,14 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* SCREEN: DIARY */}
+          {/* SCREEN 4: DIARY (NHẬT KÝ HỌC TẬP TÁCH BIỆT CHUẨN v16.5) */}
           {screen === 'DIARY' && (
             <div className="space-y-4 animate-in fade-in duration-300">
-              <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight mb-2">Nhật ký Lịch sử Học tập</h3>
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">Nhật ký Lịch sử Học tập</h3>
+                <span className="text-xs font-bold text-slate-400">{diaryEntries.length} bài đã lưu</span>
+              </div>
+
               {diaryEntries.length === 0 ? (
                 <div className="py-16 text-center text-slate-400 italic text-xs bg-white rounded-3xl border border-slate-100">
                   Chưa có bài tập nào được lưu vào nhật ký.
