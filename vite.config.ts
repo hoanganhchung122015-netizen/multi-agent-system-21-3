@@ -1,19 +1,18 @@
 import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
-import geminiHandler from './api/gemini';
 
 export default defineConfig(({ mode }) => {
-  // Nạp toàn bộ biến môi trường từ file .env.local
+  // Nạp toàn bộ biến môi trường từ file .env local hoặc hệ thống
   const env = loadEnv(mode, process.cwd(), '');
 
-  // Cấu hình nạp 4 API Keys cho hệ thống QUAD-CORE MAS
-  const k1 = env.GEMINI_API_KEY_1 || env.GEMINI_API_KEY || env.VITE_GEMINI_API_KEY || '';
-  const k2 = env.GEMINI_API_KEY_2 || '';
-  const k3 = env.GEMINI_API_KEY_3 || '';
-  const k4 = env.GEMINI_API_KEY_4 || '';
+  // Cấu hình nạp linh hoạt 4 API Keys (Đọc cả VITE_ lẫn GEMINI_)
+  const k1 = env.VITE_GEMINI_API_KEY_1 || env.GEMINI_API_KEY_1 || env.GEMINI_API_KEY || env.VITE_GEMINI_API_KEY || '';
+  const k2 = env.VITE_GEMINI_API_KEY_2 || env.GEMINI_API_KEY_2 || '';
+  const k3 = env.VITE_GEMINI_API_KEY_3 || env.GEMINI_API_KEY_3 || '';
+  const k4 = env.VITE_GEMINI_API_KEY_4 || env.GEMINI_API_KEY_4 || '';
 
-  // Gán trực tiếp vào process.env của Node.js Server môi trường Dev
+  // Gán vào process.env của Node.js Server môi trường Dev
   process.env.GEMINI_API_KEY_1 = k1;
   process.env.GEMINI_API_KEY_2 = k2;
   process.env.GEMINI_API_KEY_3 = k3;
@@ -29,8 +28,8 @@ export default defineConfig(({ mode }) => {
       {
         name: 'gemini-api-dev-server',
         configureServer(server) {
-          // Bắt các request gửi đến /api/gemini ở môi trường dev local
-          server.middlewares.use((req, res, next) => {
+          // Chỉ nạp động (dynamic import) handler khi chạy dev local, tránh làm lỗi quá trình Build Vercel
+          server.middlewares.use(async (req, res, next) => {
             if (req.url?.startsWith('/api/gemini')) {
               if (req.method !== 'POST') {
                 res.statusCode = 405;
@@ -44,8 +43,7 @@ export default defineConfig(({ mode }) => {
               req.on('end', async () => {
                 try {
                   const parsedBody = body ? JSON.parse(body) : {};
-                  
-                  // Đảm bảo duy trì 4 Keys trong process.env trước khi gọi Handler
+
                   process.env.GEMINI_API_KEY_1 = k1;
                   process.env.GEMINI_API_KEY_2 = k2;
                   process.env.GEMINI_API_KEY_3 = k3;
@@ -75,7 +73,11 @@ export default defineConfig(({ mode }) => {
                     }
                   };
 
-                  await geminiHandler(vercelReq, vercelRes);
+                  // Import động để cách ly hoàn toàn với luồng Build trên Vercel
+                  const geminiModule = await import('./api/gemini');
+                  const handler = geminiModule.default || geminiModule;
+                  await handler(vercelReq, vercelRes);
+
                 } catch (err: any) {
                   console.error("Lỗi Middleware Gemini Dev Server:", err);
                   res.statusCode = 500;
@@ -98,7 +100,7 @@ export default defineConfig(({ mode }) => {
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(__dirname, './src'),
       }
     }
   };
