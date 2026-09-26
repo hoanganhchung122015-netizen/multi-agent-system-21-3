@@ -17,20 +17,32 @@ export interface VercelResponse {
 const TEXT_MODEL = 'gemini-2.5-flash';
 
 /**
- * Lấy danh sách toàn bộ API Key từ các biến môi trường của Vercel (Hỗ trợ Vite)
+ * Lấy danh sách toàn bộ API Key từ các biến môi trường trên Vercel Serverless Function
  */
 const getAllAPIKeys = (): string[] => {
   const rawKeys: string[] = [];
-  const env = import.meta.env;
 
-  // 1. Lấy từ các biến lẻ VITE_GEMINI_API_KEY_1 đến VITE_GEMINI_API_KEY_4
-  if (env.VITE_GEMINI_API_KEY_1) rawKeys.push(env.VITE_GEMINI_API_KEY_1);
-  if (env.VITE_GEMINI_API_KEY_2) rawKeys.push(env.VITE_GEMINI_API_KEY_2);
-  if (env.VITE_GEMINI_API_KEY_3) rawKeys.push(env.VITE_GEMINI_API_KEY_3);
-  if (env.VITE_GEMINI_API_KEY_4) rawKeys.push(env.VITE_GEMINI_API_KEY_4);
+  // Hàm hỗ trợ đọc biến môi trường linh hoạt (Cả GEMINI_API_KEY_x lẫn VITE_GEMINI_API_KEY_x)
+  const getEnv = (key: string) => {
+    if (typeof process !== 'undefined' && process.env) {
+      return process.env[key] || process.env[`VITE_${key}`];
+    }
+    return undefined;
+  };
+
+  // 1. Lấy từ các biến lẻ KEY_1 đến KEY_4
+  const k1 = getEnv('GEMINI_API_KEY_1');
+  const k2 = getEnv('GEMINI_API_KEY_2');
+  const k3 = getEnv('GEMINI_API_KEY_3');
+  const k4 = getEnv('GEMINI_API_KEY_4');
+
+  if (k1) rawKeys.push(k1);
+  if (k2) rawKeys.push(k2);
+  if (k3) rawKeys.push(k3);
+  if (k4) rawKeys.push(k4);
 
   // 2. Fallback nếu khai báo dạng chuỗi gộp phân tách bằng dấu phẩy
-  const comboKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY;
+  const comboKey = getEnv('GEMINI_API_KEY') || getEnv('API_KEY');
   if (comboKey) {
     rawKeys.push(...comboKey.split(','));
   }
@@ -49,31 +61,27 @@ const getAllAPIKeys = (): string[] => {
 const getOrderedKeysForAgent = (agent?: string): string[] => {
   const allKeys = getAllAPIKeys();
   if (allKeys.length === 0) return [];
+
   // Xác định Key ưu tiên hàng đầu dựa trên Tác tử
   let primaryKeyIndex = 0;
   if (agent === 'Điều phối MAS' || agent === 'ORCHESTRATOR') {
     primaryKeyIndex = 0; // Key 1
-  } else if (agent === 'Giải nhanh 1S' || agent === 'GIAI_NHANH_1S') {
+  } else if (agent === 'Giải nhanh 1S' || agent === 'GIẢI NHANH 1S' || agent === 'GIAI_NHANH_1S') {
     primaryKeyIndex = 1; // Key 2
-  } else if (agent === 'Gia sư AI' || agent === 'GIA_SU_AI') {
+  } else if (agent === 'Gia sư AI' || agent === 'GIA SƯ AI' || agent === 'GIA_SU_AI') {
     primaryKeyIndex = 2; // Key 3
-  } else if (agent === 'Luyện Skill' || agent === 'LUYEN_SKILL') {
+  } else if (agent === 'Luyện Skill' || agent === 'LUYỆN SKILL' || agent === 'LUYEN_SKILL') {
     primaryKeyIndex = 3; // Key 4
   }
 
-  // Đưa Key ưu tiên lên đầu, các Key còn lại xếp phía sau để làm dự phòng
-  const ordered: string[] = [];
-  if (allKeys[primaryKeyIndex]) {
-    ordered.push(allKeys[primaryKeyIndex]);
-  }
+  // Nếu vị trí vượt quá số lượng Key thực tế có sẵn, dùng phép chia lấy dư
+  const validIndex = primaryKeyIndex % allKeys.length;
 
-  allKeys.forEach((key, index) => {
-    if (index !== primaryKeyIndex && !ordered.includes(key)) {
-      ordered.push(key);
-    }
-  });
-
-  return ordered;
+  // Xoay vòng mảng: Đưa Key ưu tiên lên đầu, các Key còn lại xếp phía sau làm dự phòng
+  return [
+    ...allKeys.slice(validIndex),
+    ...allKeys.slice(0, validIndex)
+  ];
 };
 
 /**
@@ -149,7 +157,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         topP: 0.8 
       };
 
-      // Nếu yêu cầu định dạng JSON (Cho Giải nhanh 1S hoặc Luyện Skill)
+      // Nếu yêu cầu định dạng JSON
       if (responseFormat === 'json') {
         generationConfig.responseMimeType = "application/json";
       }
